@@ -8,34 +8,59 @@
 
 ## 📌 Overview / 项目概述
 
-**SerialZero** is a lightweight Windows-focused serial port utility built with Go and a sleek browser-based UI.
-It provides a clean, responsive console experience, advanced logging, highlight rules, and reliable high-frequency data handling.
-
-**SerialZero 是一个基于 Go 的 Windows 串口助手，采用现代 Web UI。它提供流畅的终端交互、日志管理、高亮规则以及高频率数据收发支持。**
+<!-- Logo 与介绍区域 - 居中并排布局 -->
+<div align="center">
+  <div style="
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 30px;
+    margin: 20px 0;
+    max-width: 900px;
+  ">
+    <!-- Logo 图片 -->
+    <div>
+      <img src="https://github.com/Astor-Zore/SerialZero/raw/master/pictures/title.png" 
+           alt="SerialZero Logo" 
+           width="100%" 
+           style="display: block;">
+    </div>
+  </div>
+</div>
 
 ---
 
-## 🎨 Logo & Screenshots / Logo 与截图
-
-> **Logo:** 请在此位置插入你的 Logo（例如 `docs/logo.png`）
-
-![Logo placeholder](./docs/logo-placeholder.png)
-
-> **Screenshots:** 请在此位置插入使用界面截图。
-
-![UI screenshot placeholder](./docs/screenshot-placeholder.png)
+## 🎨 Screenshots / 截图
+ 
+<p align="center">
+  <table>
+    <tr>
+      <!-- 第一行 -->
+      <td align="center">
+        <img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/ansi.png" width="500" alt=""><br>
+        <strong>ANSI</strong>
+      </td>
+      <td align="center">
+        <img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/highlight.png" width="500" alt=""><br>
+        <strong>Highlight</strong>
+      </td>
+    </tr>
+  </table>
+</p>
 
 ---
 
 ## ✨ Features / 功能亮点
 
-- ✅ **Web UI + 浏览器访问**：无需安装客户端，使用浏览器即可操作。
-- ✅ **实时串口收发**：支持高频率（ms 级）数据接收与发送。
-- ✅ **固定尺寸日志区**：带滚动条的日志区域，支持跟踪最新消息。
-- ✅ **高亮规则**：按关键词/正则高亮，可区分大小写。
-- ✅ **日志记录**：按 `COMx_YYYYMMDD_HHMMSS.log` 统一命名保存。
-- ✅ **配置驱动**：通过 `config.toml` 进行串口、日志、高亮等设置。
-- ✅ **命令行参数**：支持 `-h` 查看帮助。
+- ✅ **Web UI + 浏览器访问 (Web UI + Browser Access)**  
+  &nbsp;&nbsp;&nbsp;&nbsp;*无需安装客户端，使用浏览器即可操作。*  
+  &nbsp;&nbsp;&nbsp;&nbsp;*No client installation required, accessible via browser.*
+- ✅ **实时串口收发 (Real-time Serial Communication)**  
+  &nbsp;&nbsp;&nbsp;&nbsp;*支持高频率（ms 级）数据接收与发送。*  
+  &nbsp;&nbsp;&nbsp;&nbsp;*Supports high-frequency (millisecond-level) data transmission and reception.*
+...
 
 ---
 
@@ -116,22 +141,18 @@ showTimestamp = true
 ## 📦 Build & Development / 构建与开发
 
 ```bash
-# Run tests (if available)
-go test ./...
+# go install mod
+go mod tidy
 
 # Build (Go 1.20+ recommended)
-go build
+go build -o SerialZero.exe
 ```
 
 ---
 
 ## 🤝 Contributing / 贡献
 
-欢迎 Fork 并提交 PR。请确保：
-
-- 代码风格统一
-- 变更有对应说明
-- 关键逻辑已测试（如有测试用例）
+None
 
 ---
 
