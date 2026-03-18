@@ -1,37 +1,68 @@
-# SerialZero
+﻿# SerialZero
 
-SerialZero 是一个专业、美观的串口助手应用，专为Windows平台设计。采用扁平化项目结构，开箱即用，功能完备，UI美观专业。
+> **SerialZero** — A professional, elegant serial port assistant with a modern Web UI.
 
-## 特性
+[![GitHub](https://img.shields.io/github/stars/Astor-Zore/SerialZero?style=social)](https://github.com/Astor-Zore/SerialZero)
 
-- 高端简约优雅的Web界面，线条优雅简单，配色协调一致
-- 通过 `config.toml` 配置文件管理串口参数、日志路径和高亮组
-- 日志文件按 `COM11_20260317_211634.log` 格式命名
-- 统一使用Linux回车显示，不使用^M
-- 支持同时输入和输出，类似于shell交互，按Tab直接发送
-- 程序 `-h` 参数显示详细帮助信息
-- 支持查看历史记录，可选择跟踪最新消息
+---
 
-## 用法
+## 📌 Overview / 项目概述
 
-- **F1**: 显示帮助菜单
-- **F2**: 连接/断开串口，UI上有连接状态的提示
-- **F3**: 扫描串口，列出扫描到的可连接的串口列表，可以通过⬆️⬇️进行选择，回车选中
-- **F4**: 弹窗修改波特率，回车确认
-- **Esc**: 关闭模态框
-- **PageUp/PageDown** 或 **↑↓**: 翻阅历史
+**SerialZero** is a lightweight Windows-focused serial port utility built with Go and a sleek browser-based UI.
+It provides a clean, responsive console experience, advanced logging, highlight rules, and reliable high-frequency data handling.
 
-## 安装与运行
+**SerialZero 是一个基于 Go 的 Windows 串口助手，采用现代 Web UI。它提供流畅的终端交互、日志管理、高亮规则以及高频率数据收发支持。**
 
-1. 确保安装了Go语言环境
-2. 克隆或下载项目
-3. 运行 `go build` 编译
-4. 执行 `./SerialZero` 启动服务器
-5. 在浏览器中访问 `http://localhost:8080`
+---
 
-## 配置
+## 🎨 Logo & Screenshots / Logo 与截图
 
-编辑 `config.toml` 文件：
+> **Logo:** 请在此位置插入你的 Logo（例如 `docs/logo.png`）
+
+![Logo placeholder](./docs/logo-placeholder.png)
+
+> **Screenshots:** 请在此位置插入使用界面截图。
+
+![UI screenshot placeholder](./docs/screenshot-placeholder.png)
+
+---
+
+## ✨ Features / 功能亮点
+
+- ✅ **Web UI + 浏览器访问**：无需安装客户端，使用浏览器即可操作。
+- ✅ **实时串口收发**：支持高频率（ms 级）数据接收与发送。
+- ✅ **固定尺寸日志区**：带滚动条的日志区域，支持跟踪最新消息。
+- ✅ **高亮规则**：按关键词/正则高亮，可区分大小写。
+- ✅ **日志记录**：按 `COMx_YYYYMMDD_HHMMSS.log` 统一命名保存。
+- ✅ **配置驱动**：通过 `config.toml` 进行串口、日志、高亮等设置。
+- ✅ **命令行参数**：支持 `-h` 查看帮助。
+
+---
+
+## 🚀 Quick Start / 快速开始
+
+```bash
+# Clone
+git clone https://github.com/Astor-Zore/SerialZero.git
+cd SerialZero
+
+# Build
+go build -o SerialZero
+
+# Run
+./SerialZero
+
+# Open in browser
+# -> http://localhost:8080
+```
+
+> **Tip:** Run from PowerShell or CMD on Windows.
+
+---
+
+## ⚙️ Configuration / 配置说明
+
+Edit `config.toml` in the project root (a default file is generated on first run):
 
 ```toml
 [serial]
@@ -45,16 +76,69 @@ parity = "N"
 path = "./logs"
 
 [highlight]
-groups = []
+groups = [
+  # Pattern matching is case-insensitive. Format: "pattern:color"
+  # Example: "ok:#00ff00" or "ERROR:#ff0000"
+]
+
+[ui]
+# Font name and size (example: "Consolas" / 12)
+font = "Consolas"
+fontsize = 12
+
+# Show timestamps in the log output (true / false)
+showTimestamp = true
 ```
 
-## 依赖
+---
 
-- github.com/gin-gonic/gin
-- github.com/gorilla/websocket
-- github.com/BurntSushi/toml
-- github.com/tarm/serial
+## 🧭 Usage / 使用说明
 
-- github.com/rivo/tview
-- github.com/tarm/serial
-- github.com/BurntSushi/toml
+### Keybindings / 常用按键
+
+| Action | Key | Description |
+|--------|-----|-------------|
+| Help menu | `F1` | 显示快捷键说明 |
+| Connect / Disconnect | `F2` | 连接/断开串口 |
+| Scan ports | `F3` | 扫描可用串口列表 |
+| Change baud rate | `F4` | 弹窗修改波特率 |
+| Close modal | `Esc` | 关闭当前模态窗口 |
+| Scroll history | `PageUp/PageDown` / `↑/↓` | 翻页查看历史记录 |
+
+### Highlight Rules / 高亮规则
+
+- Case-insensitive by default.
+- Format: `pattern:color`.
+- Example: `ok:#00ff00`, `ERROR:#ff0000`, `warn:#ffaa00`.
+
+---
+
+## 📦 Build & Development / 构建与开发
+
+```bash
+# Run tests (if available)
+go test ./...
+
+# Build (Go 1.20+ recommended)
+go build
+```
+
+---
+
+## 🤝 Contributing / 贡献
+
+欢迎 Fork 并提交 PR。请确保：
+
+- 代码风格统一
+- 变更有对应说明
+- 关键逻辑已测试（如有测试用例）
+
+---
+
+## 📄 License
+
+本项目遵循 MIT 许可证。
+
+---
+
+> 📌 Repository: https://github.com/Astor-Zore/SerialZero
