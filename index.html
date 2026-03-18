@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SerialZero - Serial Port Assistant</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="sidebar">
+        <div class="config-panel">
+            <h3>Serial Port Configuration</h3>
+            <label>Port: <input type="text" id="port-input" value="COM1"></label>
+            <label>Baudrate: <input type="number" id="baud-input" value="9600"></label>
+            <label>Data Bits: <select id="databits-select">
+                <option value="8">8</option>
+                <option value="7">7</option>
+                <option value="6">6</option>
+                <option value="5">5</option>
+            </select></label>
+            <label>Stop Bits: <select id="stopbits-select">
+                <option value="1">1</option>
+                <option value="2">2</option>
+            </select></label>
+            <label>Parity: <select id="parity-select">
+                <option value="N">None</option>
+                <option value="E">Even</option>
+                <option value="O">Odd</option>
+            </select></label>
+            <label>Font: <input type="text" id="font-input" placeholder="Nerd Font Mono"></label>
+            <label>Font Size: <input type="number" id="fontsize-input" value="14" min="8" max="36"></label>
+            <label>Highlight Rules (each line pattern:color):<br>
+                <textarea id="highlight-input" rows="4" style="width:100%;"></textarea>
+            </label>
+            <label>ANSI Highlight Rules (effective when ANSI is disabled):<br>
+                <small style="color: var(--text-muted);">Supports regular expressions, e.g.: error:red, warn:yellow</small>
+            </label>
+            <button id="save-config-btn">Save Configuration</button>
+        </div>
+
+        <div class="control-panel">
+            <h3>Control Panel</h3>
+            <div class="mode-toggle">
+                <input type="radio" id="ascii-mode" name="mode" value="ascii" checked>
+                <label for="ascii-mode">ASCII</label>
+                <input type="radio" id="hex-mode" name="mode" value="hex">
+                <label for="hex-mode">HEX</label>
+                <div class="slider"></div>
+            </div>
+            
+            <div class="timestamp-toggle">
+                <input type="radio" id="timestamp-on" name="timestamp" value="on" checked>
+                <label for="timestamp-on">Timestamp ON</label>
+                <input type="radio" id="timestamp-off" name="timestamp" value="off">
+                <label for="timestamp-off">Timestamp OFF</label>
+                <div class="slider"></div>
+            </div>
+            
+            <div class="ansi-toggle">
+                <input type="radio" id="ansi-on" name="ansi" value="on" checked>
+                <label for="ansi-on">ANSI ON</label>
+                <input type="radio" id="ansi-off" name="ansi" value="off">
+                <label for="ansi-off">ANSI OFF</label>
+                <div class="slider"></div>
+            </div>
+            
+            <div class="button-group">
+                <button id="connect-btn">Connect (F2)</button>
+                <button id="scan-btn">Scan Ports (F3)</button>
+                <button id="clear-btn">Clear Output</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <header>
+            <h1>SerialZero</h1>
+            <div class="status">
+                <span id="connection-status">Disconnected</span>
+                <span id="port-info">Port: COM1 | Baudrate: 9600</span>
+                <span id="data-mode">Mode: ASCII</span>
+                <span id="timestamp-status">Timestamp: ON</span>
+                <span id="ansi-status">ANSI: ON</span>
+            </div>
+        </header>
+
+        <div class="output-area">
+            <div class="output-container">
+                <div id="output" class="output"></div>
+            </div>
+        </div>
+
+        <div class="input-area">
+            <div class="input-row">
+                <input type="text" id="input" placeholder="Enter command... (Tab sends Tab, Enter sends)" autocomplete="off">
+            </div>
+            <div class="button-row">
+                <button id="send-btn">Send</button>
+                <button id="help-btn">Help (F1)</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
