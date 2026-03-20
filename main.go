@@ -1,8 +1,11 @@
+//go:build windows
+
 package main
 
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
@@ -15,12 +18,15 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/getlantern/systray"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -32,6 +38,9 @@ var staticEmbed embed.FS
 
 //go:embed index.html
 var indexHTML string
+
+//go:embed app.ico
+var iconData []byte
 
 // Config structure
 type Config struct {
@@ -71,6 +80,9 @@ type App struct {
 	writeChan   chan []byte
 	receiveChan chan []byte
 	mu          sync.Mutex
+	httpServer  *http.Server
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 // Client wraps websocket connection
@@ -88,85 +100,162 @@ var upgrader = websocket.Upgrader{
 // ANSI regex for stripping (only used for logging)
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
-func main() {
-	if len(os.Args) > 1 && os.Args[1] == "-h" {
-		printHelp()
-		return
-	}
+// Windows API functions
+var (
+	modkernel32    = syscall.NewLazyDLL("kernel32.dll")
+	procFreeConsole = modkernel32.NewProc("FreeConsole")
+	procAllocConsole = modkernel32.NewProc("AllocConsole")
+)
 
+// hideConsole detaches the process from its console, effectively hiding the window.
+func hideConsole() {
+	procFreeConsole.Call()
+}
+
+// showConsole allocates a new console window and redirects stdout/stderr to it.
+func showConsole() {
+	procAllocConsole.Call()
+
+	// Redirect stdout and stderr to the new console.
+	outFile, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0)
+	if err == nil {
+		os.Stdout = outFile
+		os.Stderr = outFile
+		log.SetOutput(outFile)
+	}
+	// Also redirect fmt.Println etc.
+	fmt.Println("Console opened. SerialZero is running.")
+	fmt.Println("Web UI: http://localhost:8080")
+}
+
+// redirectStdoutToNull redirects standard output and error to NUL to suppress console output.
+func redirectStdoutToNull() {
+	nullFile, err := os.OpenFile("NUL", os.O_WRONLY, 0)
+	if err == nil {
+		os.Stdout = nullFile
+		os.Stderr = nullFile
+		log.SetOutput(nullFile)
+	}
+}
+
+func main() {
+	// Hide the console window and redirect stdout/stderr to NUL at startup.
+	hideConsole()
+	redirectStdoutToNull()
+
+	// Create a context that we can cancel on exit.
+	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
 		clients:     make(map[string]*Client),
 		sendHistory: []string{},
 		dataMode:    "ascii",
 		writeChan:   make(chan []byte, 1024),
 		receiveChan: make(chan []byte, 32768),
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 	app.loadConfig()
 
-	r := gin.Default()
+	// Start the web server in a goroutine.
+	go app.runWebServer()
 
-	// Extract the static subdirectory from embedded filesystem
+	// Start system tray (blocks until systray.Quit() is called).
+	systray.Run(func() {
+		// OnReady
+		systray.SetIcon(iconData)
+		systray.SetTooltip("SerialZero - http://localhost:8080")
+
+		mOpenUI := systray.AddMenuItem("Open Web UI", "Open http://localhost:8080 in browser")
+		mShowConsole := systray.AddMenuItem("Show Console", "Show the console window")
+		mHideConsole := systray.AddMenuItem("Hide Console", "Hide the console window")
+		systray.AddSeparator()
+		mQuit := systray.AddMenuItem("Quit", "Exit the application")
+
+		// Handle menu clicks.
+		go func() {
+			for {
+				select {
+				case <-mOpenUI.ClickedCh:
+					openBrowser("http://localhost:8080")
+				case <-mShowConsole.ClickedCh:
+					showConsole()
+				case <-mHideConsole.ClickedCh:
+					hideConsole()
+				case <-mQuit.ClickedCh:
+					systray.Quit()
+					return
+				}
+			}
+		}()
+	}, func() {
+		// OnExit
+		if app.cancel != nil {
+			app.cancel()
+		}
+		if app.httpServer != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			app.httpServer.Shutdown(shutdownCtx)
+		}
+		// Clean up serial port if open.
+		if app.port != nil {
+			app.port.Close()
+		}
+		os.Exit(0)
+	})
+}
+
+// runWebServer configures Gin and starts the HTTP server.
+func (a *App) runWebServer() {
+	gin.SetMode(gin.ReleaseMode) // Suppress Gin's startup log to avoid console noise.
+	r := gin.New()
+	r.Use(gin.Recovery()) // Keep panic recovery but no logger (we handle logs ourselves).
+
+	// Extract the static subdirectory from embedded filesystem.
 	staticFS, err := fs.Sub(staticEmbed, "static")
 	if err != nil {
-		panic(err)
+		log.Printf("Failed to get static sub-fs: %v", err)
+		return
 	}
 
-	// Serve embedded static files
+	// Serve embedded static files.
 	r.StaticFS("/static", http.FS(staticFS))
 
-	// Serve embedded index.html
+	// Serve embedded index.html.
 	r.GET("/", func(c *gin.Context) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(indexHTML))
 	})
 
-	r.GET("/ws", app.handleWebSocket)
+	r.GET("/ws", a.handleWebSocket)
 
-	r.POST("/connect", app.handleConnect)
-	r.POST("/disconnect", app.handleDisconnect)
-	r.POST("/scan", app.handleScan)
-	r.POST("/setbaud", app.handleSetBaud)
-	r.POST("/send", app.handleSend)
-	r.POST("/setport", app.handleSetPort)
-	r.POST("/setmode", app.handleSetMode)
-	r.POST("/clear", app.handleClear)
-	r.POST("/getconfig", app.handleGetConfig)
-	r.POST("/saveconfig", app.handleSaveConfig)
+	r.POST("/connect", a.handleConnect)
+	r.POST("/disconnect", a.handleDisconnect)
+	r.POST("/scan", a.handleScan)
+	r.POST("/setbaud", a.handleSetBaud)
+	r.POST("/send", a.handleSend)
+	r.POST("/setport", a.handleSetPort)
+	r.POST("/setmode", a.handleSetMode)
+	r.POST("/clear", a.handleClear)
+	r.POST("/getconfig", a.handleGetConfig)
+	r.POST("/saveconfig", a.handleSaveConfig)
 
-	r.Run(":8080")
+	a.httpServer = &http.Server{
+		Addr:    ":8080",
+		Handler: r,
+	}
+
+	// Start listening in a goroutine so we can handle graceful shutdown.
+	go func() {
+		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Wait for context cancellation (systray quit).
+	<-a.ctx.Done()
 }
 
-func printHelp() {
-	fmt.Println("SerialZero - Serial Port Assistant Tool")
-	fmt.Println("Usage: SerialZero [options]")
-	fmt.Println("Options:")
-	fmt.Println("  -h  Show help information")
-	fmt.Println("After starting, visit http://localhost:8080")
-}
-
-func (a *App) loadConfig() {
-	if _, err := toml.DecodeFile("config.toml", &a.config); err != nil {
-		log.Printf("Failed to load configuration: %v, using default", err)
-		a.config.Serial.Port = "COM1"
-		a.config.Serial.Baud = 9600
-		a.config.Serial.Databits = 8
-		a.config.Serial.Stopbits = 1
-		a.config.Serial.Parity = "N"
-		a.config.Log.Path = "./logs"
-		a.config.UI.Font = "Nerd Font Mono"
-		a.config.UI.FontSize = 14
-		a.config.UI.Timestamp = true
-		a.config.UI.Shell = true
-		a.config.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
-	}
-	if a.config.UI.Font == "" {
-		a.config.UI.Font = "Nerd Font Mono"
-	}
-	if a.config.UI.FontSize == 0 {
-		a.config.UI.FontSize = 14
-	}
-	os.MkdirAll(a.config.Log.Path, 0755)
-}
-
+// ---------- Serial Port Operations (unchanged) ----------
 func (a *App) handleWebSocket(c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -250,7 +339,6 @@ func (a *App) sendToClient(clientID string, message interface{}) {
 	}
 }
 
-// ---------- Serial Port Operations ----------
 func (a *App) handleConnect(c *gin.Context) {
 	if a.isConnected {
 		c.JSON(200, gin.H{"status": "already connected"})
@@ -644,4 +732,46 @@ func (a *App) openLogFile() {
 	}
 	a.logFile = f
 	a.logWriter = bufio.NewWriter(f)
+}
+
+func (a *App) loadConfig() {
+	if _, err := toml.DecodeFile("config.toml", &a.config); err != nil {
+		log.Printf("Failed to load configuration: %v, using default", err)
+		a.config.Serial.Port = "COM1"
+		a.config.Serial.Baud = 9600
+		a.config.Serial.Databits = 8
+		a.config.Serial.Stopbits = 1
+		a.config.Serial.Parity = "N"
+		a.config.Log.Path = "./logs"
+		a.config.UI.Font = "Nerd Font Mono"
+		a.config.UI.FontSize = 14
+		a.config.UI.Timestamp = true
+		a.config.UI.Shell = true
+		a.config.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
+	}
+	if a.config.UI.Font == "" {
+		a.config.UI.Font = "Nerd Font Mono"
+	}
+	if a.config.UI.FontSize == 0 {
+		a.config.UI.FontSize = 14
+	}
+	os.MkdirAll(a.config.Log.Path, 0755)
+}
+
+// openBrowser attempts to open the specified URL in the default browser.
+func openBrowser(url string) {
+	var err error
+	switch runtime.GOOS {
+	case "windows":
+		err = exec.Command("cmd", "/c", "start", url).Start()
+	case "darwin":
+		err = exec.Command("open", url).Start()
+	case "linux":
+		err = exec.Command("xdg-open", url).Start()
+	default:
+		err = fmt.Errorf("unsupported platform")
+	}
+	if err != nil {
+		log.Printf("Failed to open browser: %v", err)
+	}
 }

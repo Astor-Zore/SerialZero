@@ -10,13 +10,22 @@ let timestampEnabled = true;
 let highlightRules = [];
 let pendingMessages = [];
 let updateTimer = null;
+let outputMessages = []; // Store raw message text for re-highlighting
 
 let term = null;
 let fitAddon = null;
 let termContainer = document.getElementById('terminal-container');
 let outputContainer = document.getElementById('output-container');
 let inputArea = document.getElementById('input-area');
-let resizeObserver = null; // Observer for container size changes
+let resizeObserver = null;
+
+// Default highlight rules (shown when config is empty)
+const DEFAULT_HIGHLIGHT_GROUPS = [
+    "error:#ff0000",
+    "warn:#ffa500",
+    "info:#00ff00",
+    "debug:#00ffff"
+];
 
 document.addEventListener('DOMContentLoaded', function() {
     initWebSocket();
@@ -132,6 +141,7 @@ function addConfigChangeListeners() {
     });
     document.getElementById('highlight-input').addEventListener('change', function() {
         updateHighlightRules(this.value.split('\n').map(l => l.trim()).filter(l => l));
+        rerenderAllOutput();
         saveConfigSilently();
     });
 }
@@ -227,7 +237,6 @@ function setShellEnabled(enabled) {
         if (!term) {
             initTerminal();
         } else {
-            // Terminal already exists, just ensure it's properly sized
             fitTerminal();
         }
     } else {
@@ -249,7 +258,21 @@ function setShellEnabled(enabled) {
 }
 
 function initTerminal() {
-    // Create terminal with current font settings
+    // Robustly get FitAddon constructor from global object (handles both UMD and direct exports)
+    let FitAddonConstructor = window.FitAddon || (typeof FitAddon !== 'undefined' ? FitAddon : null);
+    // If it's an object with a FitAddon property (UMD wrapper), extract the actual constructor
+    if (FitAddonConstructor && typeof FitAddonConstructor === 'object' && FitAddonConstructor.FitAddon) {
+        FitAddonConstructor = FitAddonConstructor.FitAddon;
+    }
+    if (!FitAddonConstructor) {
+        console.error('FitAddon is not available. Make sure xterm-addon-fit.js is loaded.');
+        return;
+    }
+    if (typeof FitAddonConstructor !== 'function') {
+        console.error('FitAddon is not a constructor. Available:', FitAddonConstructor);
+        return;
+    }
+
     term = new Terminal({
         cursorBlink: true,
         theme: {
@@ -262,8 +285,7 @@ function initTerminal() {
         scrollback: 10000
     });
     
-    // Load fit addon - FIX: use new FitAddon() instead of new FitAddon.FitAddon()
-    fitAddon = new FitAddon();
+    fitAddon = new FitAddonConstructor();
     term.loadAddon(fitAddon);
     
     term.open(termContainer);
@@ -275,7 +297,6 @@ function initTerminal() {
             .catch(err => console.error('Send error:', err));
     });
     
-    // Fit terminal to container (with padding)
     const fitTerminalOnce = () => {
         if (term && fitAddon && shellEnabled && termContainer.offsetWidth > 0 && termContainer.offsetHeight > 0) {
             fitAddon.fit();
@@ -284,7 +305,6 @@ function initTerminal() {
         return false;
     };
     
-    // Use ResizeObserver to detect container size changes
     if (window.ResizeObserver) {
         resizeObserver = new ResizeObserver(() => {
             if (term && fitAddon && shellEnabled) {
@@ -294,14 +314,12 @@ function initTerminal() {
         resizeObserver.observe(termContainer);
     }
     
-    // Multiple attempts to fit terminal after DOM layout is complete
     const attemptFit = (attempts = 10) => {
         if (attempts <= 0) return;
         if (fitTerminalOnce()) return;
         setTimeout(() => attemptFit(attempts - 1), 50);
     };
     
-    // Initial fit attempts
     requestAnimationFrame(() => {
         fitTerminalOnce();
         setTimeout(() => fitTerminalOnce(), 100);
@@ -309,7 +327,6 @@ function initTerminal() {
         attemptFit(8);
     });
     
-    // Window resize handler
     window.addEventListener('resize', () => {
         if (term && fitAddon && shellEnabled) {
             fitTerminalOnce();
@@ -317,7 +334,6 @@ function initTerminal() {
     });
 }
 
-// Helper to safely fit terminal
 function fitTerminal() {
     if (term && fitAddon && shellEnabled && termContainer.offsetWidth > 0 && termContainer.offsetHeight > 0) {
         fitAddon.fit();
@@ -383,6 +399,7 @@ function handleInputKeydown(event) {
 }
 
 function addToOutput(text) {
+    outputMessages.push(text);
     pendingMessages.push(text);
     scheduleOutputUpdate();
 }
@@ -416,6 +433,20 @@ function flushOutput() {
     if (pendingMessages.length > 0) scheduleOutputUpdate();
 }
 
+function rerenderAllOutput() {
+    const outputDiv = document.getElementById('output');
+    outputDiv.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    outputMessages.forEach(msg => {
+        const html = applyHighlight(msg);
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        fragment.appendChild(div);
+    });
+    outputDiv.appendChild(fragment);
+    scrollToBottom();
+}
+
 function scrollToBottom() {
     const output = document.getElementById('output');
     output.scrollTop = output.scrollHeight;
@@ -427,6 +458,7 @@ function clearOutput(sendClear = true) {
     else {
         document.getElementById('output').innerHTML = '';
         pendingMessages = [];
+        outputMessages = [];
         if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
     }
 }
@@ -504,7 +536,6 @@ function applyFontSettings(font, size) {
         output.style.fontSize = size + 'px';
         if (term) term.setOption('fontSize', size);
         if (term && fitAddon && shellEnabled) {
-            // Re-fit terminal after font size change
             setTimeout(() => fitTerminal(), 50);
         }
     }
@@ -539,21 +570,33 @@ function updateConfig(config) {
         updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true);
         updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true);
         
-        // Critical: if shell is ON and terminal not created, initialize it
         if (config.UI.Shell && !term) {
             outputContainer.style.display = 'none';
             termContainer.style.display = 'flex';
             inputArea.style.display = 'none';
             initTerminal();
         } else if (config.UI.Shell && term && fitAddon) {
-            // Terminal already exists, ensure it's sized correctly after config load
             setTimeout(() => fitTerminal(), 100);
         }
     }
     if (config.Highlight && config.Highlight.Groups) {
         const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : [];
-        document.getElementById('highlight-input').value = groups.join('\n');
-        updateHighlightRules(groups);
+        if (groups.length === 0) {
+            document.getElementById('highlight-input').value = DEFAULT_HIGHLIGHT_GROUPS.join('\n');
+            updateHighlightRules(DEFAULT_HIGHLIGHT_GROUPS);
+        } else {
+            document.getElementById('highlight-input').value = groups.join('\n');
+            updateHighlightRules(groups);
+        }
+        if (!shellEnabled && outputMessages.length > 0) {
+            rerenderAllOutput();
+        }
+    } else {
+        document.getElementById('highlight-input').value = DEFAULT_HIGHLIGHT_GROUPS.join('\n');
+        updateHighlightRules(DEFAULT_HIGHLIGHT_GROUPS);
+        if (!shellEnabled && outputMessages.length > 0) {
+            rerenderAllOutput();
+        }
     }
 }
 
