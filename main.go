@@ -3,10 +3,12 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -24,6 +26,12 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tarm/serial"
 )
+
+//go:embed static
+var staticEmbed embed.FS
+
+//go:embed index.html
+var indexHTML string
 
 // Config structure
 type Config struct {
@@ -96,11 +104,19 @@ func main() {
 	app.loadConfig()
 
 	r := gin.Default()
-	r.LoadHTMLFiles("index.html")
-	r.Static("/static", "./")
 
+	// Extract the static subdirectory from embedded filesystem
+	staticFS, err := fs.Sub(staticEmbed, "static")
+	if err != nil {
+		panic(err)
+	}
+
+	// Serve embedded static files
+	r.StaticFS("/static", http.FS(staticFS))
+
+	// Serve embedded index.html
 	r.GET("/", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "index.html", nil)
+		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(indexHTML))
 	})
 
 	r.GET("/ws", app.handleWebSocket)
@@ -234,7 +250,7 @@ func (a *App) sendToClient(clientID string, message interface{}) {
 	}
 }
 
-// ---------- 串口操作 ----------
+// ---------- Serial Port Operations ----------
 func (a *App) handleConnect(c *gin.Context) {
 	if a.isConnected {
 		c.JSON(200, gin.H{"status": "already connected"})
@@ -459,7 +475,7 @@ func (a *App) handleSend(c *gin.Context) {
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
-// ---------- 串口读写循环 ----------
+// ---------- Serial Read/Write Loops ----------
 func (a *App) readData() {
 	buf := make([]byte, 4096)
 	for {
@@ -537,7 +553,10 @@ func (a *App) processReceiver() {
 			}
 			pending = append(pending, b...)
 			if !timer.Stop() {
-				select { case <-timer.C: default: }
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 			timer.Reset(flushInterval)
 

@@ -5,8 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SerialZero - Serial Port Assistant</title>
     <link rel="stylesheet" href="/static/style.css">
-    <!-- xterm.js CSS -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="/static/lib/xterm.css">
 </head>
 <body>
     <div class="sidebar">
@@ -111,9 +110,9 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
-    <!-- Add fit addon for terminal resizing -->
-    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <!-- xterm.js and fit addon (local) -->
+    <script src="/static/lib/xterm.js"></script>
+    <script src="/static/lib/xterm-addon-fit.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>
