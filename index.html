@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SerialZero - Serial Port Assistant</title>
     <link rel="stylesheet" href="/static/style.css">
+    <!-- xterm.js CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
 </head>
 <body>
     <div class="sidebar">
@@ -32,7 +34,7 @@
             <label>Highlight Rules (each line pattern:color):<br>
                 <textarea id="highlight-input" rows="4" style="width:100%;"></textarea>
             </label>
-            <label>ANSI Highlight Rules (effective when ANSI is disabled):<br>
+            <label>ANSI Highlight Rules (effective when SHELL is OFF):<br>
                 <small style="color: var(--text-muted);">Supports regular expressions, e.g.: error:red, warn:yellow</small>
             </label>
             <button id="save-config-btn">Save Configuration</button>
@@ -56,11 +58,11 @@
                 <div class="slider"></div>
             </div>
             
-            <div class="ansi-toggle">
-                <input type="radio" id="ansi-on" name="ansi" value="on" checked>
-                <label for="ansi-on">ANSI ON</label>
-                <input type="radio" id="ansi-off" name="ansi" value="off">
-                <label for="ansi-off">ANSI OFF</label>
+            <div class="shell-toggle">
+                <input type="radio" id="shell-on" name="shell" value="on" checked>
+                <label for="shell-on">SHELL ON</label>
+                <input type="radio" id="shell-off" name="shell" value="off">
+                <label for="shell-off">SHELL OFF</label>
                 <div class="slider"></div>
             </div>
             
@@ -80,17 +82,18 @@
                 <span id="port-info">Port: COM1 | Baudrate: 9600</span>
                 <span id="data-mode">Mode: ASCII</span>
                 <span id="timestamp-status">Timestamp: ON</span>
-                <span id="ansi-status">ANSI: ON</span>
+                <span id="shell-status">SHELL: ON</span>
             </div>
         </header>
 
         <div class="output-area">
-            <div class="output-container">
+            <div class="output-container" id="output-container" style="display: block;">
                 <div id="output" class="output"></div>
             </div>
+            <div id="terminal-container" style="display: none;"></div>
         </div>
 
-        <div class="input-area">
+        <div class="input-area" id="input-area">
             <div class="input-row">
                 <input type="text" id="input" placeholder="Enter command... (Tab sends Tab, Enter sends)" autocomplete="off">
             </div>
@@ -108,6 +111,9 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/xterm/lib/xterm.js"></script>
+    <!-- Add fit addon for terminal resizing -->
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>

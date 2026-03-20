@@ -1,6 +1,6 @@
 [serial]
-  port = "COM10"
-  baud = 2000000
+  port = "COM43"
+  baud = 115200
   databits = 8
   stopbits = 1
   parity = "N"
@@ -12,7 +12,7 @@
   font = "CaskaydiaMono NF"
   fontsize = 14
   timestamp = true
-  ansi = true
+  shell = true
 
 [highlight]
   groups = ["ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"]

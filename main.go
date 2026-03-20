@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -23,7 +25,7 @@ import (
 	"github.com/tarm/serial"
 )
 
-// Config structure for serial port application
+// Config structure
 type Config struct {
 	Serial struct {
 		Port     string `toml:"port"`
@@ -39,14 +41,14 @@ type Config struct {
 		Font      string `toml:"font"`
 		FontSize  int    `toml:"fontsize"`
 		Timestamp bool   `toml:"timestamp"`
-		Ansi      bool   `toml:"ansi"` // New: ANSI escape sequence support
+		Shell     bool   `toml:"shell"`
 	} `toml:"ui"`
 	Highlight struct {
 		Groups []string `toml:"groups"`
 	} `toml:"highlight"`
 }
 
-// App represents the main application structure
+// App main struct
 type App struct {
 	config      Config
 	port        *serial.Port
@@ -54,11 +56,19 @@ type App struct {
 	logWriter   *bufio.Writer
 	history     []string
 	isConnected bool
-	clients     map[string]*websocket.Conn
+	clients     map[string]*Client
+	clientsMu   sync.RWMutex
 	sendHistory []string
-	dataMode    string
+	dataMode    string // "ascii" or "hex"
 	writeChan   chan []byte
+	receiveChan chan []byte
 	mu          sync.Mutex
+}
+
+// Client wraps websocket connection
+type Client struct {
+	conn *websocket.Conn
+	mu   sync.Mutex
 }
 
 var upgrader = websocket.Upgrader{
@@ -67,7 +77,7 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// ansiRegex matches standard ANSI escape sequences (e.g., \x1b[31m, \x1b[1;32m)
+// ANSI regex for stripping (only used for logging)
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 func main() {
@@ -77,10 +87,11 @@ func main() {
 	}
 
 	app := &App{
-		clients:     make(map[string]*websocket.Conn),
+		clients:     make(map[string]*Client),
 		sendHistory: []string{},
 		dataMode:    "ascii",
 		writeChan:   make(chan []byte, 1024),
+		receiveChan: make(chan []byte, 32768),
 	}
 	app.loadConfig()
 
@@ -118,7 +129,7 @@ func printHelp() {
 
 func (a *App) loadConfig() {
 	if _, err := toml.DecodeFile("config.toml", &a.config); err != nil {
-		log.Printf("Failed to load configuration: %v, using default configuration", err)
+		log.Printf("Failed to load configuration: %v, using default", err)
 		a.config.Serial.Port = "COM1"
 		a.config.Serial.Baud = 9600
 		a.config.Serial.Databits = 8
@@ -128,18 +139,15 @@ func (a *App) loadConfig() {
 		a.config.UI.Font = "Nerd Font Mono"
 		a.config.UI.FontSize = 14
 		a.config.UI.Timestamp = true
-		a.config.UI.Ansi = true // Default: enable ANSI support
+		a.config.UI.Shell = true
 		a.config.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
 	}
-	// Ensure defaults are set even if config file exists but has empty values
 	if a.config.UI.Font == "" {
 		a.config.UI.Font = "Nerd Font Mono"
 	}
 	if a.config.UI.FontSize == 0 {
 		a.config.UI.FontSize = 14
 	}
-	// Explicitly ensure ANSI defaults to true if not set (defensive)
-	// The `toml` decoder should handle the boolean zero-value (false), so we rely on the line above in the error block.
 	os.MkdirAll(a.config.Log.Path, 0755)
 }
 
@@ -150,8 +158,15 @@ func (a *App) handleWebSocket(c *gin.Context) {
 		return
 	}
 	clientID := uuid.New().String()
-	a.clients[clientID] = conn
-	defer delete(a.clients, clientID)
+	a.clientsMu.Lock()
+	a.clients[clientID] = &Client{conn: conn}
+	a.clientsMu.Unlock()
+	defer func() {
+		a.clientsMu.Lock()
+		delete(a.clients, clientID)
+		a.clientsMu.Unlock()
+		conn.Close()
+	}()
 
 	a.sendToClient(clientID, map[string]interface{}{
 		"type":      "config",
@@ -161,47 +176,79 @@ func (a *App) handleWebSocket(c *gin.Context) {
 	})
 
 	for {
-		_, _, err := conn.ReadMessage()
-		if err != nil {
+		if _, _, err := conn.ReadMessage(); err != nil {
 			break
 		}
 	}
 }
 
 func (a *App) broadcast(message interface{}) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	data, _ := json.Marshal(message)
-	for _, conn := range a.clients {
-		conn.WriteMessage(websocket.TextMessage, data)
+	a.clientsMu.RLock()
+	clientsCopy := make(map[string]*Client, len(a.clients))
+	for id, c := range a.clients {
+		clientsCopy[id] = c
+	}
+	a.clientsMu.RUnlock()
+
+	for id, client := range clientsCopy {
+		if client == nil {
+			continue
+		}
+		client.mu.Lock()
+		client.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+		err := client.conn.WriteMessage(websocket.TextMessage, data)
+		client.mu.Unlock()
+		if err != nil {
+			log.Printf("WebSocket write error for %s: %v", id, err)
+			a.clientsMu.Lock()
+			if cur, ok := a.clients[id]; ok && cur == client {
+				delete(a.clients, id)
+			}
+			a.clientsMu.Unlock()
+			client.conn.Close()
+		}
 	}
 }
 
 func (a *App) sendToClient(clientID string, message interface{}) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if conn, ok := a.clients[clientID]; ok {
-		data, _ := json.Marshal(message)
-		conn.WriteMessage(websocket.TextMessage, data)
+	data, _ := json.Marshal(message)
+	a.clientsMu.RLock()
+	client, ok := a.clients[clientID]
+	a.clientsMu.RUnlock()
+	if !ok || client == nil {
+		return
+	}
+	client.mu.Lock()
+	client.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	err := client.conn.WriteMessage(websocket.TextMessage, data)
+	client.mu.Unlock()
+	if err != nil {
+		log.Printf("sendToClient error for %s: %v", clientID, err)
+		a.clientsMu.Lock()
+		if cur, ok := a.clients[clientID]; ok && cur == client {
+			delete(a.clients, clientID)
+		}
+		a.clientsMu.Unlock()
+		client.conn.Close()
 	}
 }
 
+// ---------- 串口操作 ----------
 func (a *App) handleConnect(c *gin.Context) {
 	if a.isConnected {
 		c.JSON(200, gin.H{"status": "already connected"})
 		return
 	}
-
-	c2 := &serial.Config{
-		Name:     a.config.Serial.Port,
-		Baud:     a.config.Serial.Baud,
-		Size:     byte(a.config.Serial.Databits),
-		StopBits: serial.StopBits(a.config.Serial.Stopbits),
-		Parity:   serial.Parity(a.config.Serial.Parity[0]),
+	cfg := &serial.Config{
+		Name:        a.config.Serial.Port,
+		Baud:        a.config.Serial.Baud,
+		Size:        byte(a.config.Serial.Databits),
+		StopBits:    serial.StopBits(a.config.Serial.Stopbits),
+		Parity:      serial.Parity(a.config.Serial.Parity[0]),
+		ReadTimeout: time.Millisecond * 100,
 	}
-	port, err := serial.OpenPort(c2)
+	port, err := serial.OpenPort(cfg)
 	if err != nil {
 		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
 		return
@@ -210,7 +257,9 @@ func (a *App) handleConnect(c *gin.Context) {
 	a.isConnected = true
 	a.openLogFile()
 	a.writeChan = make(chan []byte, 1024)
+	a.receiveChan = make(chan []byte, 32768)
 	go a.readData()
+	go a.processReceiver()
 	go a.writeLoop()
 	a.broadcast(map[string]interface{}{
 		"type":    "status",
@@ -238,7 +287,10 @@ func (a *App) handleDisconnect(c *gin.Context) {
 		close(a.writeChan)
 		a.writeChan = nil
 	}
-
+	if a.receiveChan != nil {
+		close(a.receiveChan)
+		a.receiveChan = nil
+	}
 	a.broadcast(map[string]interface{}{
 		"type":    "status",
 		"message": "Serial port disconnected",
@@ -248,17 +300,16 @@ func (a *App) handleDisconnect(c *gin.Context) {
 
 func (a *App) handleScan(c *gin.Context) {
 	cmd := exec.Command("powershell", "-Command", "Get-CimInstance Win32_SerialPort | Select-Object -ExpandProperty DeviceID")
-	output, err := cmd.Output()
+	out, err := cmd.Output()
 	if err != nil {
-		// Fallback to WMI
 		cmd = exec.Command("powershell", "-Command", "Get-WmiObject Win32_SerialPort | Select-Object -ExpandProperty DeviceID")
-		output, err = cmd.Output()
+		out, err = cmd.Output()
 		if err != nil {
 			c.JSON(200, gin.H{"status": "error", "message": err.Error()})
 			return
 		}
 	}
-	portsStr := strings.TrimSpace(string(output))
+	portsStr := strings.TrimSpace(string(out))
 	var ports []string
 	if portsStr != "" {
 		ports = strings.Split(portsStr, "\r\n")
@@ -278,133 +329,6 @@ func (a *App) handleSetBaud(c *gin.Context) {
 	}
 	a.config.Serial.Baud = baud
 	c.JSON(200, gin.H{"status": "ok"})
-}
-
-func (a *App) handleSend(c *gin.Context) {
-	data := c.PostForm("data")
-	if !a.isConnected || a.port == nil {
-		c.JSON(200, gin.H{"status": "error", "message": "Serial port not connected"})
-		return
-	}
-
-	var sendData []byte
-	if a.dataMode == "hex" {
-		var err error
-		sendData, err = hex.DecodeString(strings.ReplaceAll(data, " ", ""))
-		if err != nil {
-			c.JSON(200, gin.H{"status": "error", "message": "Invalid HEX data"})
-			return
-		}
-	} else {
-		sendData = []byte(data)
-	}
-
-	select {
-	case a.writeChan <- sendData:
-	default:
-		log.Println("Write channel full, discarding send data")
-	}
-
-	if data != "" && (len(a.sendHistory) == 0 || a.sendHistory[len(a.sendHistory)-1] != data) {
-		a.sendHistory = append(a.sendHistory, data)
-		if len(a.sendHistory) > 100 {
-			a.sendHistory = a.sendHistory[1:]
-		}
-	}
-
-	displayMsg := data
-	if a.dataMode == "hex" {
-		displayMsg = hex.EncodeToString(sendData)
-	}
-	a.logMessage(fmt.Sprintf("[Send] %s", displayMsg))
-	c.JSON(200, gin.H{"status": "ok"})
-}
-
-func (a *App) readData() {
-	buf := make([]byte, 4096)
-	var messageBuffer []byte
-	lastSendTime := time.Now()
-	sendInterval := 10 * time.Millisecond // Reduce send interval
-
-	for {
-		if a.port == nil {
-			return
-		}
-
-		n, err := a.port.Read(buf)
-		if err != nil {
-			log.Println("Read error:", err)
-			return
-		}
-
-		if n > 0 {
-			// Add new data to buffer
-			messageBuffer = append(messageBuffer, buf[:n]...)
-
-			// Send if time since last send exceeds interval, or buffer size exceeds threshold
-			if time.Since(lastSendTime) >= sendInterval || len(messageBuffer) > 2048 {
-				if len(messageBuffer) > 0 {
-					// Process all data in buffer
-					msg := string(messageBuffer)
-					if a.dataMode == "hex" {
-						msg = hex.EncodeToString(messageBuffer)
-					}
-					a.logMessage(msg)
-					messageBuffer = nil
-					lastSendTime = time.Now()
-				}
-			}
-		}
-	}
-}
-
-func (a *App) writeLoop() {
-	for data := range a.writeChan {
-		if a.port == nil {
-			continue
-		}
-		_, err := a.port.Write(data)
-		if err != nil {
-			log.Println("Write error:", err)
-			continue
-		}
-	}
-}
-
-func (a *App) logMessage(msg string) {
-	// Split message by lines to ensure each line has independent timestamp
-	lines := strings.Split(strings.TrimSuffix(msg, "\n"), "\n")
-
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-
-		fullMsg := line
-		if a.config.UI.Timestamp {
-			timestamp := time.Now().Format("15:04:05")
-			fullMsg = fmt.Sprintf("[%s] %s", timestamp, line)
-		}
-
-		// Strip ANSI escape sequences for log file to keep it clean and readable
-		strippedMsg := ansiRegex.ReplaceAllString(fullMsg, "")
-
-		if a.logWriter != nil {
-			a.logWriter.WriteString(strippedMsg + "\n")
-		}
-
-		a.history = append(a.history, fullMsg)
-		// Broadcast the original message (with ANSI codes) for Web UI display
-		a.broadcast(map[string]interface{}{
-			"type":    "message",
-			"message": fullMsg + "\n",
-		})
-	}
-
-	// Periodically flush log writer
-	if a.logWriter != nil && len(a.history)%10 == 0 {
-		a.logWriter.Flush()
-	}
 }
 
 func (a *App) handleSetPort(c *gin.Context) {
@@ -429,9 +353,7 @@ func (a *App) handleSetMode(c *gin.Context) {
 
 func (a *App) handleClear(c *gin.Context) {
 	a.history = []string{}
-	a.broadcast(map[string]interface{}{
-		"type": "clear",
-	})
+	a.broadcast(map[string]interface{}{"type": "clear"})
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -450,11 +372,7 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to parse configuration: " + err.Error()})
 		return
 	}
-
-	if newConfig.Log.Path == "" {
-		newConfig.Log.Path = a.config.Log.Path
-	}
-
+	// Apply defaults if missing
 	if newConfig.Serial.Port == "" {
 		newConfig.Serial.Port = "COM1"
 	}
@@ -476,28 +394,22 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 	if newConfig.UI.FontSize == 0 {
 		newConfig.UI.FontSize = 14
 	}
-	// ANSI defaults to true if not specified in the incoming JSON
-	// Note: The zero value for bool is false, so we need to check if it was explicitly set.
-	// This is a simplified check. A more robust way would require a pointer or a custom unmarshaler.
-	// We'll assume the frontend always sends the correct value.
-	// Highlight groups default
+	if newConfig.Log.Path == "" {
+		newConfig.Log.Path = "./logs"
+	}
 	if newConfig.Highlight.Groups == nil {
 		newConfig.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
 	}
-
 	a.config = newConfig
 
 	file, err := os.Create("config.toml")
 	if err != nil {
-		c.JSON(200, gin.H{"status": "error", "message": "Failed to create configuration file: " + err.Error()})
+		c.JSON(200, gin.H{"status": "error", "message": "Failed to create config file: " + err.Error()})
 		return
 	}
 	defer file.Close()
-
-	encoder := toml.NewEncoder(file)
-	err = encoder.Encode(a.config)
-	if err != nil {
-		c.JSON(200, gin.H{"status": "error", "message": "Failed to write configuration: " + err.Error()})
+	if err := toml.NewEncoder(file).Encode(a.config); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": "Failed to write config: " + err.Error()})
 		return
 	}
 
@@ -507,19 +419,210 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		"connected": a.isConnected,
 		"mode":      a.dataMode,
 	})
-
 	c.JSON(200, gin.H{"status": "ok"})
+}
+
+func (a *App) handleSend(c *gin.Context) {
+	data := c.PostForm("data")
+	if !a.isConnected || a.port == nil {
+		c.JSON(200, gin.H{"status": "error", "message": "Serial port not connected"})
+		return
+	}
+	var sendData []byte
+	if a.dataMode == "hex" {
+		clean := strings.ReplaceAll(data, " ", "")
+		var err error
+		sendData, err = hex.DecodeString(clean)
+		if err != nil {
+			c.JSON(200, gin.H{"status": "error", "message": "Invalid HEX data"})
+			return
+		}
+	} else {
+		sendData = []byte(data)
+	}
+	if len(sendData) == 0 {
+		c.JSON(200, gin.H{"status": "error", "message": "Empty payload"})
+		return
+	}
+	select {
+	case a.writeChan <- sendData:
+	default:
+		c.JSON(200, gin.H{"status": "error", "message": "Write queue full"})
+		return
+	}
+	if data != "" && (len(a.sendHistory) == 0 || a.sendHistory[len(a.sendHistory)-1] != data) {
+		a.sendHistory = append(a.sendHistory, data)
+		if len(a.sendHistory) > 100 {
+			a.sendHistory = a.sendHistory[1:]
+		}
+	}
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
+// ---------- 串口读写循环 ----------
+func (a *App) readData() {
+	buf := make([]byte, 4096)
+	for {
+		if a.port == nil {
+			return
+		}
+		n, err := a.port.Read(buf)
+		if err != nil {
+			if a.port == nil {
+				return
+			}
+			if err == io.EOF {
+				return
+			}
+			if strings.Contains(err.Error(), "timeout") {
+				if n == 0 {
+					time.Sleep(10 * time.Millisecond)
+					continue
+				}
+			} else {
+				log.Println("Read error:", err)
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
+		}
+		if n > 0 {
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			if a.receiveChan != nil {
+				a.receiveChan <- data
+			}
+		}
+	}
+}
+
+func (a *App) writeLoop() {
+	for data := range a.writeChan {
+		if a.port == nil {
+			continue
+		}
+		remaining := data
+		for len(remaining) > 0 {
+			n, err := a.port.Write(remaining)
+			if err != nil {
+				log.Println("Write error:", err)
+				break
+			}
+			if n == 0 {
+				time.Sleep(5 * time.Millisecond)
+			}
+			remaining = remaining[n:]
+		}
+	}
+}
+
+// processReceiver handles incoming data and broadcasts to clients
+func (a *App) processReceiver() {
+	const (
+		flushInterval = 50 * time.Millisecond
+		maxBufferSize = 8192
+	)
+	var pending []byte
+	timer := time.NewTimer(flushInterval)
+	timer.Stop()
+	defer timer.Stop()
+
+	for {
+		select {
+		case b, ok := <-a.receiveChan:
+			if !ok {
+				if len(pending) > 0 {
+					a.processAndBroadcast(pending)
+				}
+				return
+			}
+			pending = append(pending, b...)
+			if !timer.Stop() {
+				select { case <-timer.C: default: }
+			}
+			timer.Reset(flushInterval)
+
+			// Split by newline for natural line break
+			for {
+				idx := bytes.IndexByte(pending, '\n')
+				if idx < 0 {
+					break
+				}
+				line := pending[:idx+1]
+				a.processAndBroadcast(line)
+				pending = pending[idx+1:]
+			}
+
+			if len(pending) > maxBufferSize {
+				log.Println("Buffer overflow, flushing")
+				a.processAndBroadcast(pending)
+				pending = nil
+				timer.Stop()
+			}
+
+		case <-timer.C:
+			if len(pending) > 0 {
+				a.processAndBroadcast(pending)
+				pending = nil
+			}
+		}
+	}
+}
+
+// processAndBroadcast formats a chunk of data according to current mode and broadcasts
+func (a *App) processAndBroadcast(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+
+	var msg string
+	if a.config.UI.Shell {
+		// SHELL ON: send raw data as is (xterm will handle ANSI)
+		msg = string(data)
+		// No timestamp added in shell mode
+	} else {
+		// SHELL OFF: format according to dataMode
+		if a.dataMode == "hex" {
+			hexStr := hex.EncodeToString(data)
+			var sb strings.Builder
+			for i, r := range hexStr {
+				if i > 0 && i%2 == 0 {
+					sb.WriteByte(' ')
+				}
+				sb.WriteRune(r)
+			}
+			msg = sb.String()
+		} else {
+			msg = strings.ToValidUTF8(string(data), "")
+		}
+		// Add timestamp if enabled
+		if a.config.UI.Timestamp {
+			timestamp := time.Now().Format("15:04:05.000")
+			msg = fmt.Sprintf("[%s] %s", timestamp, msg)
+		}
+	}
+
+	a.broadcast(map[string]interface{}{
+		"type":    "message",
+		"message": msg,
+	})
+
+	// Log to file (strip ANSI)
+	clean := ansiRegex.ReplaceAllString(string(data), "")
+	if a.logWriter != nil {
+		a.logWriter.WriteString(clean)
+		a.logWriter.Flush()
+	}
 }
 
 func (a *App) openLogFile() {
 	now := time.Now()
 	filename := fmt.Sprintf("%s_%s.log", a.config.Serial.Port, now.Format("20060102_150405"))
 	path := filepath.Join(a.config.Log.Path, filename)
-	file, err := os.Create(path)
+	f, err := os.Create(path)
 	if err != nil {
 		log.Printf("Failed to create log file: %v", err)
 		return
 	}
-	a.logFile = file
-	a.logWriter = bufio.NewWriter(file)
+	a.logFile = f
+	a.logWriter = bufio.NewWriter(f)
 }

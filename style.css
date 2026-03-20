@@ -27,7 +27,6 @@ body {
     --output-area-gap: 20px;
 }
 
-/* Enhanced glass effect */
 .sidebar {
     width: 320px;
     background: rgba(32, 32, 48, 0.85);
@@ -107,16 +106,11 @@ body {
     color: #ffffff;
 }
 
-/* Unified input and select box width - complete alignment */
-.config-panel label {
-    position: relative;
-}
-
 .config-panel input:not([type="number"]), 
 .config-panel input[type="number"], 
 .config-panel select, 
 .config-panel textarea {
-    width: 200px; /* Fixed width, consistent */
+    width: 200px;
     padding: 8px 12px;
     margin-top: 4px;
     border: 1px solid rgba(255, 255, 255, 0.2);
@@ -130,10 +124,9 @@ body {
     box-sizing: border-box;
 }
 
-/* Special handling for highlight rule textarea */
 .config-panel textarea {
-    width: calc(100% - 24px); /* Textarea can take full width */
-    max-width: none; /* Remove max-width restriction */
+    width: calc(100% - 24px);
+    max-width: none;
 }
 
 .config-panel input:focus, .config-panel select:focus, .config-panel textarea:focus {
@@ -149,7 +142,6 @@ body {
     font-size: 0.85em;
 }
 
-/* Main content area styling */
 .main-content {
     flex: 1;
     padding: 20px 30px;
@@ -239,19 +231,13 @@ h1 {
     animation: pulseSuccess 2s infinite;
 }
 
-#timestamp-status, #ansi-status {
-    color: #ffffff;
-}
-
-/* Output area styling */
 .output-area {
     flex: 1;
-    min-height: 0;
+    min-height: 0; /* Critical for flex child to shrink properly */
     display: flex;
     flex-direction: column;
     background: var(--bg-light);
     border-radius: 16px;
-    padding: 0;
     backdrop-filter: blur(20px);
     border: 1px solid var(--border-color);
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
@@ -259,22 +245,25 @@ h1 {
     overflow: hidden;
 }
 
-.output-area::before {
-    content: '';
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--primary-color), transparent);
+.output-container, #terminal-container {
+    flex: 1;
+    min-height: 0; /* Allow flex item to shrink below content height */
+    position: relative;
+    overflow: hidden;
 }
 
-.output-container {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    position: relative; /* Added for positioning */
+/* Ensure terminal container fills its parent completely with padding */
+#terminal-container {
+    width: 100%;
+    height: 100%;
+    padding: 8px; /* Add comfortable padding */
+    box-sizing: border-box; /* Padding included in size calculation */
+}
+
+/* xterm.js default element should fill container */
+.xterm {
+    height: 100%;
+    width: 100%;
 }
 
 .output {
@@ -287,13 +276,9 @@ h1 {
     white-space: pre-wrap;
     word-wrap: break-word;
     line-height: 1.5;
-    min-height: 200px;
-    max-height: none;
-    position: relative;
     box-sizing: border-box;
 }
 
-/* Scrollbar styling */
 .output::-webkit-scrollbar {
     width: 10px;
 }
@@ -322,13 +307,11 @@ h1 {
     background: transparent;
 }
 
-/* Firefox scrollbar */
 .output {
     scrollbar-width: thin;
     scrollbar-color: var(--primary-color) rgba(255, 255, 255, 0.05);
 }
 
-/* Input area styling - redesigned layout */
 .input-area {
     display: flex;
     flex-direction: column;
@@ -384,16 +367,14 @@ h1 {
     color: rgba(255, 255, 255, 0.4);
 }
 
-/* Button styling - send and help buttons fixed size */
 #send-btn, #help-btn {
-    width: 150px; /* Fixed width */
+    width: 150px;
     min-width: 150px;
     max-width: 150px;
     padding: 12px 0;
-    flex: none; /* No stretching */
+    flex: none;
 }
 
-/* Buttons in control panel */
 .control-panel .button-group {
     display: flex;
     flex-direction: column;
@@ -406,7 +387,6 @@ h1 {
     margin: 0;
 }
 
-/* General button styling */
 button {
     background: linear-gradient(45deg, var(--primary-color), var(--secondary-color));
     border: none;
@@ -452,8 +432,7 @@ button:hover::after {
     left: 100%;
 }
 
-/* Control panel mode toggle - slider style */
-.mode-toggle, .timestamp-toggle, .ansi-toggle {
+.mode-toggle, .timestamp-toggle, .shell-toggle {
     display: flex;
     position: relative;
     background: rgba(0, 0, 0, 0.2);
@@ -463,11 +442,11 @@ button:hover::after {
     overflow: hidden;
 }
 
-.mode-toggle input[type="radio"], .timestamp-toggle input[type="radio"], .ansi-toggle input[type="radio"] {
+.mode-toggle input[type="radio"], .timestamp-toggle input[type="radio"], .shell-toggle input[type="radio"] {
     display: none;
 }
 
-.mode-toggle label, .timestamp-toggle label, .ansi-toggle label {
+.mode-toggle label, .timestamp-toggle label, .shell-toggle label {
     flex: 1;
     text-align: center;
     padding: 10px 0;
@@ -481,7 +460,7 @@ button:hover::after {
     font-size: 0.9em;
 }
 
-.mode-toggle .slider, .timestamp-toggle .slider, .ansi-toggle .slider {
+.mode-toggle .slider, .timestamp-toggle .slider, .shell-toggle .slider {
     position: absolute;
     top: 4px;
     left: 4px;
@@ -496,12 +475,11 @@ button:hover::after {
 
 .mode-toggle input[type="radio"]:checked + label, 
 .timestamp-toggle input[type="radio"]:checked + label,
-.ansi-toggle input[type="radio"]:checked + label {
+.shell-toggle input[type="radio"]:checked + label {
     color: white;
     font-weight: 500;
 }
 
-/* Slider position */
 .mode-toggle input[type="radio"]#ascii-mode:checked ~ .slider {
     transform: translateX(0);
 }
@@ -518,15 +496,14 @@ button:hover::after {
     transform: translateX(100%);
 }
 
-.ansi-toggle input[type="radio"]#ansi-on:checked ~ .slider {
+.shell-toggle input[type="radio"]#shell-on:checked ~ .slider {
     transform: translateX(0);
 }
 
-.ansi-toggle input[type="radio"]#ansi-off:checked ~ .slider {
+.shell-toggle input[type="radio"]#shell-off:checked ~ .slider {
     transform: translateX(100%);
 }
 
-/* Modal styling - enhanced serial port selection interface */
 .modal {
     display: none;
     position: fixed;
@@ -587,7 +564,6 @@ button:hover::after {
     line-height: 1.6;
 }
 
-/* Loading animation */
 .loader {
     display: flex;
     flex-direction: column;
@@ -612,7 +588,6 @@ button:hover::after {
     margin-top: 10px;
 }
 
-/* Serial port buttons list - redesigned as button form */
 .port-buttons-container {
     list-style: none;
     padding: 0;
@@ -693,7 +668,6 @@ button:hover::after {
     content: '⚠️';
 }
 
-/* Highlighted text styles */
 .output span[style*="color"] {
     padding: 0 2px;
     border-radius: 2px;
@@ -701,7 +675,6 @@ button:hover::after {
     text-shadow: 0 0 2px currentColor;
 }
 
-/* Animation effects */
 @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
@@ -732,13 +705,11 @@ button:hover::after {
     to { transform: rotate(360deg); }
 }
 
-/* NEW: Blink animation for ANSI code 5 (Blink) */
 @keyframes blink {
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
 }
 
-/* Responsive design */
 @media (max-width: 1200px) {
     .sidebar {
         width: 280px;
@@ -812,7 +783,6 @@ button:hover::after {
     }
 }
 
-/* Message timestamp style */
 .output .timestamp {
     color: var(--primary-color);
     font-weight: 600;

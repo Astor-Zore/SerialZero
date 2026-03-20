@@ -1,11 +1,22 @@
 // app.js
 let ws;
-let history = [];
+let historyList = [];
 let historyIndex = 0;
 let isConnected = false;
 let currentMode = 'ascii';
-let ansiEnabled = true;
+let shellEnabled = true;
 let timestampEnabled = true;
+
+let highlightRules = [];
+let pendingMessages = [];
+let updateTimer = null;
+
+let term = null;
+let fitAddon = null;
+let termContainer = document.getElementById('terminal-container');
+let outputContainer = document.getElementById('output-container');
+let inputArea = document.getElementById('input-area');
+let resizeObserver = null; // Observer for container size changes
 
 document.addEventListener('DOMContentLoaded', function() {
     initWebSocket();
@@ -29,20 +40,16 @@ function initWebSocket() {
             
             switch(data.type) {
                 case 'message':
-                    addToOutput(data.message);
-                    history.push(data.message);
-                    historyIndex = history.length;
+                    if (shellEnabled) {
+                        if (term) term.write(data.message);
+                    } else {
+                        addToOutput(data.message);
+                    }
                     break;
                 case 'config':
-                    if (data.config) {
-                        updateConfig(data.config);
-                    }
-                    if (data.connected !== undefined) {
-                        updateConnectionStatus(data.connected);
-                    }
-                    if (data.mode) {
-                        updateMode(data.mode);
-                    }
+                    if (data.config) updateConfig(data.config);
+                    if (data.connected !== undefined) updateConnectionStatus(data.connected);
+                    if (data.mode) updateMode(data.mode);
                     break;
                 case 'status':
                     console.log('Status update:', data.message);
@@ -78,120 +85,71 @@ function setupEventListeners() {
     document.getElementById('save-config-btn').addEventListener('click', saveConfig);
     document.getElementById('input').addEventListener('keydown', handleInputKeydown);
 
-    // Mode toggle listeners
     document.getElementById('ascii-mode').addEventListener('change', function() {
         if (this.checked) setMode(this.value);
     });
-    
     document.getElementById('hex-mode').addEventListener('change', function() {
         if (this.checked) setMode(this.value);
     });
-    
-    // Timestamp toggle listeners
     document.getElementById('timestamp-on').addEventListener('change', function() {
         if (this.checked) setTimestamp(true);
     });
-    
     document.getElementById('timestamp-off').addEventListener('change', function() {
         if (this.checked) setTimestamp(false);
     });
-    
-    // ANSI toggle listeners
-    document.getElementById('ansi-on').addEventListener('change', function() {
-        if (this.checked) setAnsiEnabled(true);
+    document.getElementById('shell-on').addEventListener('change', function() {
+        if (this.checked) setShellEnabled(true);
     });
-    
-    document.getElementById('ansi-off').addEventListener('change', function() {
-        if (this.checked) setAnsiEnabled(false);
+    document.getElementById('shell-off').addEventListener('change', function() {
+        if (this.checked) setShellEnabled(false);
     });
 
     document.querySelector('.close').addEventListener('click', closeModal);
     window.addEventListener('click', function(event) {
-        if (event.target == document.getElementById('modal')) {
-            closeModal();
-        }
+        if (event.target == document.getElementById('modal')) closeModal();
     });
 }
 
 function addConfigChangeListeners() {
-    // Serial configuration change listeners
     document.getElementById('port-input').addEventListener('change', function() {
         updatePortInfo(this.value, document.getElementById('baud-input').value);
+        saveConfigSilently();
     });
-    
     document.getElementById('baud-input').addEventListener('change', function() {
         updatePortInfo(document.getElementById('port-input').value, this.value);
-    });
-    
-    document.getElementById('databits-select').addEventListener('change', function() {
         saveConfigSilently();
     });
-    
-    document.getElementById('stopbits-select').addEventListener('change', function() {
-        saveConfigSilently();
-    });
-    
-    document.getElementById('parity-select').addEventListener('change', function() {
-        saveConfigSilently();
-    });
-    
-    // Font settings change listeners
+    document.getElementById('databits-select').addEventListener('change', saveConfigSilently);
+    document.getElementById('stopbits-select').addEventListener('change', saveConfigSilently);
+    document.getElementById('parity-select').addEventListener('change', saveConfigSilently);
     document.getElementById('font-input').addEventListener('change', function() {
         applyFontSettings(this.value, document.getElementById('fontsize-input').value);
+        saveConfigSilently();
     });
-    
     document.getElementById('fontsize-input').addEventListener('change', function() {
         applyFontSettings(document.getElementById('font-input').value, this.value);
+        saveConfigSilently();
+    });
+    document.getElementById('highlight-input').addEventListener('change', function() {
+        updateHighlightRules(this.value.split('\n').map(l => l.trim()).filter(l => l));
+        saveConfigSilently();
     });
 }
 
 function setupKeyboardShortcuts() {
     document.addEventListener('keydown', function(event) {
-        if (event.target.tagName === 'INPUT') return;
-
+        if (event.target.tagName === 'INPUT' && event.target.id !== 'input') return;
         switch(event.key) {
-            case 'F1':
-                event.preventDefault();
-                showHelp();
-                break;
-            case 'F2':
-                event.preventDefault();
-                toggleConnection();
-                break;
-            case 'F3':
-                event.preventDefault();
-                scanPorts();
-                break;
-            case 'Escape':
-                event.preventDefault();
-                closeModal();
-                break;
-            case 'PageUp':
-                event.preventDefault();
-                scrollOutput(-1);
-                break;
-            case 'PageDown':
-                event.preventDefault();
-                scrollOutput(1);
-                break;
-            case 'ArrowUp':
-                event.preventDefault();
-                scrollOutput(-1);
-                break;
-            case 'ArrowDown':
-                event.preventDefault();
-                scrollOutput(1);
-                break;
+            case 'F1': event.preventDefault(); showHelp(); break;
+            case 'F2': event.preventDefault(); toggleConnection(); break;
+            case 'F3': event.preventDefault(); scanPorts(); break;
+            case 'Escape': event.preventDefault(); closeModal(); break;
         }
     });
 }
 
 function toggleConnection() {
-    if (isConnected) {
-        disconnect();
-    } else {
-        connect();
-    }
+    if (isConnected) disconnect(); else connect();
 }
 
 function connect() {
@@ -232,21 +190,16 @@ function scanPorts() {
     fetch('/scan', { method: 'POST' })
         .then(response => response.json())
         .then(data => {
-            if (data.status === 'ok') {
-                showPortSelection(data.ports);
-            } else {
-                showPortSelectionError(data.message);
-            }
+            if (data.status === 'ok') showPortSelection(data.ports);
+            else showPortSelectionError(data.message);
         })
-        .catch(error => {
-            showPortSelectionError(error.message);
-        });
+        .catch(error => showPortSelectionError(error.message));
 }
 
 function setMode(mode) {
+    if (shellEnabled) return;
     const formData = new FormData();
     formData.append('mode', mode);
-
     fetch('/setmode', { method: 'POST', body: formData })
         .then(response => response.json())
         .then(data => {
@@ -258,112 +211,350 @@ function setMode(mode) {
 }
 
 function setTimestamp(enabled) {
-    console.log('Setting timestamp to:', enabled);
     timestampEnabled = enabled;
-    
     updateTimestampStatus(enabled);
+    saveConfigSilently();
+}
+
+function setShellEnabled(enabled) {
+    shellEnabled = enabled;
+    updateShellStatus(enabled);
     
-    const config = {
-        Serial: {
-            Port: document.getElementById('port-input').value,
-            Baud: parseInt(document.getElementById('baud-input').value),
-            Databits: parseInt(document.getElementById('databits-select').value),
-            Stopbits: parseInt(document.getElementById('stopbits-select').value),
-            Parity: document.getElementById('parity-select').value
-        },
-        UI: {
-            Font: document.getElementById('font-input').value || "Nerd Font Mono",
-            FontSize: parseInt(document.getElementById('fontsize-input').value) || 14,
-            Timestamp: enabled,
-            Ansi: ansiEnabled
-        },
-        Highlight: {
-            Groups: document.getElementById('highlight-input').value
-                .split('\n')
-                .map(line => line.trim())
-                .filter(line => line !== '')
-        },
-        Log: {
-            Path: "./logs"
+    if (enabled) {
+        outputContainer.style.display = 'none';
+        termContainer.style.display = 'flex';
+        inputArea.style.display = 'none';
+        if (!term) {
+            initTerminal();
+        } else {
+            // Terminal already exists, just ensure it's properly sized
+            fitTerminal();
         }
+    } else {
+        outputContainer.style.display = 'flex';
+        termContainer.style.display = 'none';
+        inputArea.style.display = 'flex';
+        if (term) {
+            term.dispose();
+            term = null;
+            fitAddon = null;
+            if (resizeObserver) {
+                resizeObserver.disconnect();
+                resizeObserver = null;
+            }
+        }
+        clearOutput(false);
+    }
+    saveConfigSilently();
+}
+
+function initTerminal() {
+    // Create terminal with current font settings
+    term = new Terminal({
+        cursorBlink: true,
+        theme: {
+            background: '#1a1a2e',
+            foreground: '#e6e6e6',
+            cursor: '#6c63ff'
+        },
+        fontSize: parseInt(document.getElementById('fontsize-input').value) || 14,
+        fontFamily: document.getElementById('font-input').value || 'CaskaydiaMono NF, monospace',
+        scrollback: 10000
+    });
+    
+    // Load fit addon
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    
+    term.open(termContainer);
+    
+    term.onData(data => {
+        const formData = new FormData();
+        formData.append('data', data);
+        fetch('/send', { method: 'POST', body: formData })
+            .catch(err => console.error('Send error:', err));
+    });
+    
+    // Fit terminal to container (with padding)
+    const fitTerminalOnce = () => {
+        if (term && fitAddon && shellEnabled && termContainer.offsetWidth > 0 && termContainer.offsetHeight > 0) {
+            fitAddon.fit();
+            return true;
+        }
+        return false;
     };
     
-    fetch('/saveconfig', { 
-        method: 'POST', 
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'ok') {
-            console.log('Timestamp setting saved:', enabled);
+    // Use ResizeObserver to detect container size changes
+    if (window.ResizeObserver) {
+        resizeObserver = new ResizeObserver(() => {
+            if (term && fitAddon && shellEnabled) {
+                fitTerminalOnce();
+            }
+        });
+        resizeObserver.observe(termContainer);
+    }
+    
+    // Multiple attempts to fit terminal after DOM layout is complete
+    const attemptFit = (attempts = 10) => {
+        if (attempts <= 0) return;
+        if (fitTerminalOnce()) return;
+        setTimeout(() => attemptFit(attempts - 1), 50);
+    };
+    
+    // Initial fit attempts
+    requestAnimationFrame(() => {
+        fitTerminalOnce();
+        setTimeout(() => fitTerminalOnce(), 100);
+        setTimeout(() => fitTerminalOnce(), 200);
+        attemptFit(8);
+    });
+    
+    // Window resize handler
+    window.addEventListener('resize', () => {
+        if (term && fitAddon && shellEnabled) {
+            fitTerminalOnce();
         }
     });
 }
 
-function setAnsiEnabled(enabled) {
-    console.log('Setting ANSI to:', enabled);
-    ansiEnabled = enabled;
-    
-    updateAnsiStatus(enabled);
-    
-    const config = {
-        Serial: {
-            Port: document.getElementById('port-input').value,
-            Baud: parseInt(document.getElementById('baud-input').value),
-            Databits: parseInt(document.getElementById('databits-select').value),
-            Stopbits: parseInt(document.getElementById('stopbits-select').value),
-            Parity: document.getElementById('parity-select').value
-        },
-        UI: {
-            Font: document.getElementById('font-input').value || "Nerd Font Mono",
-            FontSize: parseInt(document.getElementById('fontsize-input').value) || 14,
-            Timestamp: timestampEnabled,
-            Ansi: enabled
-        },
-        Highlight: {
-            Groups: document.getElementById('highlight-input').value
-                .split('\n')
-                .map(line => line.trim())
-                .filter(line => line !== '')
-        },
-        Log: {
-            Path: "./logs"
-        }
-    };
-    
-    fetch('/saveconfig', { 
-        method: 'POST', 
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(config)
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'ok') {
-            console.log('ANSI setting saved:', enabled);
-            refreshOutput();
-        }
-    });
+// Helper to safely fit terminal
+function fitTerminal() {
+    if (term && fitAddon && shellEnabled && termContainer.offsetWidth > 0 && termContainer.offsetHeight > 0) {
+        fitAddon.fit();
+    }
 }
 
-function refreshOutput() {
+function addToHistory(command) {
+    if (!command || command.trim() === '' || shellEnabled) return;
+    command = command.trim();
+    if (historyList.length > 0 && historyList[historyList.length - 1] === command) return;
+    historyList.push(command);
+    if (historyList.length > 100) historyList.shift();
+    historyIndex = historyList.length;
+}
+
+function navigateHistory(direction) {
+    if (historyList.length === 0 || shellEnabled) return;
+    let newIndex = historyIndex + direction;
+    if (newIndex < 0) newIndex = 0;
+    if (newIndex >= historyList.length) newIndex = historyList.length - 1;
+    historyIndex = newIndex;
+    document.getElementById('input').value = historyList[historyIndex];
+}
+
+function sendData() {
+    if (shellEnabled) return;
+    const input = document.getElementById('input');
+    const data = input.value;
+    if (data === '') return;
+
+    const formData = new FormData();
+    formData.append('data', data);
+    fetch('/send', { method: 'POST', body: formData })
+        .then(response => response.json())
+        .then(res => {
+            if (res.status === 'ok') {
+                addToHistory(data);
+                input.value = '';
+                historyIndex = historyList.length;
+            } else {
+                alert('Send failed: ' + res.message);
+            }
+        });
+}
+
+function handleInputKeydown(event) {
+    if (shellEnabled) return;
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        sendData();
+    } else if (event.key === 'Tab') {
+        event.preventDefault();
+        const formData = new FormData();
+        formData.append('data', '\t');
+        fetch('/send', { method: 'POST', body: formData });
+    } else if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        navigateHistory(-1);
+    } else if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        navigateHistory(1);
+    }
+}
+
+function addToOutput(text) {
+    pendingMessages.push(text);
+    scheduleOutputUpdate();
+}
+
+function scheduleOutputUpdate() {
+    if (!updateTimer) updateTimer = setTimeout(flushOutput, 16);
+}
+
+function flushOutput() {
+    updateTimer = null;
+    if (pendingMessages.length === 0) return;
+
     const output = document.getElementById('output');
-    const messages = Array.from(output.children).map(child => child.textContent);
-    output.innerHTML = '';
+    const fragment = document.createDocumentFragment();
+    const batch = pendingMessages.splice(0, Math.min(50, pendingMessages.length));
     
-    messages.forEach(message => {
-        addToOutput(message);
+    batch.forEach(msg => {
+        const html = applyHighlight(msg);
+        const div = document.createElement('div');
+        div.innerHTML = html;
+        fragment.appendChild(div);
     });
+
+    output.appendChild(fragment);
+    const children = output.children;
+    if (children.length > 2000) {
+        const toRemove = children.length - 2000;
+        for (let i = 0; i < toRemove; i++) if (children[0]) output.removeChild(children[0]);
+    }
+    scrollToBottom();
+    if (pendingMessages.length > 0) scheduleOutputUpdate();
+}
+
+function scrollToBottom() {
+    const output = document.getElementById('output');
+    output.scrollTop = output.scrollHeight;
 }
 
 function clearOutput(sendClear = true) {
-    if (sendClear) {
-        fetch('/clear', { method: 'POST' });
+    if (sendClear) fetch('/clear', { method: 'POST' });
+    if (shellEnabled && term) term.clear();
+    else {
+        document.getElementById('output').innerHTML = '';
+        pendingMessages = [];
+        if (updateTimer) { clearTimeout(updateTimer); updateTimer = null; }
     }
+}
 
-    history = [];
-    historyIndex = 0;
-    document.getElementById('output').innerHTML = '';
+function updateHighlightRules(lines) {
+    highlightRules = lines.map(line => {
+        const parts = line.split(':');
+        if (parts.length < 2) return null;
+        const pattern = parts[0];
+        const color = parts.slice(1).join(':');
+        try { return { regex: new RegExp(pattern, 'gi'), color }; }
+        catch (e) { console.warn('Invalid regex:', pattern); return null; }
+    }).filter(r => r !== null);
+}
+
+function stripAnsi(str) {
+    return str.replace(/\x1B\[[0-?]*[ -\/]*[@-~]/g, "");
+}
+
+function escapeHtml(str) {
+    return str.replace(/[&<>"]/g, tag => {
+        const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+        return map[tag] || tag;
+    });
+}
+
+function applyHighlight(text) {
+    let cleaned = stripAnsi(text);
+    let result = escapeHtml(cleaned);
+    highlightRules.forEach(rule => {
+        result = result.replace(rule.regex, match => `<span style="color:${rule.color}; font-weight:600;">${match}</span>`);
+    });
+    return result;
+}
+
+function updateConnectionStatus(connected) {
+    isConnected = connected;
+    const status = document.getElementById('connection-status');
+    status.textContent = connected ? 'Connected' : 'Disconnected';
+    status.className = connected ? 'connected' : '';
+}
+
+function updateMode(mode) {
+    currentMode = mode;
+    document.getElementById('data-mode').textContent = 'Mode: ' + mode.toUpperCase();
+    document.getElementById('ascii-mode').checked = (mode === 'ascii');
+    document.getElementById('hex-mode').checked = (mode === 'hex');
+}
+
+function updateTimestampStatus(enabled) {
+    timestampEnabled = enabled;
+    document.getElementById('timestamp-status').textContent = `Timestamp: ${enabled ? 'ON' : 'OFF'}`;
+    document.getElementById('timestamp-on').checked = enabled;
+    document.getElementById('timestamp-off').checked = !enabled;
+}
+
+function updateShellStatus(enabled) {
+    shellEnabled = enabled;
+    document.getElementById('shell-status').textContent = `SHELL: ${enabled ? 'ON' : 'OFF'}`;
+    document.getElementById('shell-on').checked = enabled;
+    document.getElementById('shell-off').checked = !enabled;
+}
+
+function updatePortInfo(port, baud) {
+    document.getElementById('port-info').textContent = `Port: ${port} | Baudrate: ${baud}`;
+}
+
+function applyFontSettings(font, size) {
+    const output = document.getElementById('output');
+    if (font) {
+        output.style.fontFamily = font;
+        if (term) term.setOption('fontFamily', font);
+    }
+    if (size) {
+        output.style.fontSize = size + 'px';
+        if (term) term.setOption('fontSize', size);
+        if (term && fitAddon && shellEnabled) {
+            // Re-fit terminal after font size change
+            setTimeout(() => fitTerminal(), 50);
+        }
+    }
+    document.documentElement.style.setProperty('--output-font', font || 'monospace');
+    document.documentElement.style.setProperty('--output-font-size', (size || 14) + 'px');
+}
+
+function loadConfig() {
+    fetch('/getconfig', { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            updateConfig(data.config);
+            updateConnectionStatus(data.connected);
+            updateMode(data.mode);
+        });
+}
+
+function updateConfig(config) {
+    if (!config) return;
+    if (config.Serial) {
+        document.getElementById('port-input').value = config.Serial.Port || 'COM1';
+        document.getElementById('baud-input').value = config.Serial.Baud || 9600;
+        document.getElementById('databits-select').value = config.Serial.Databits || 8;
+        document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1;
+        document.getElementById('parity-select').value = config.Serial.Parity || 'N';
+        updatePortInfo(config.Serial.Port, config.Serial.Baud);
+    }
+    if (config.UI) {
+        document.getElementById('font-input').value = config.UI.Font || 'Nerd Font Mono';
+        document.getElementById('fontsize-input').value = config.UI.FontSize || 14;
+        applyFontSettings(config.UI.Font, config.UI.FontSize);
+        updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true);
+        updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true);
+        
+        // Critical: if shell is ON and terminal not created, initialize it
+        if (config.UI.Shell && !term) {
+            outputContainer.style.display = 'none';
+            termContainer.style.display = 'flex';
+            inputArea.style.display = 'none';
+            initTerminal();
+        } else if (config.UI.Shell && term && fitAddon) {
+            // Terminal already exists, ensure it's sized correctly after config load
+            setTimeout(() => fitTerminal(), 100);
+        }
+    }
+    if (config.Highlight && config.Highlight.Groups) {
+        const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : [];
+        document.getElementById('highlight-input').value = groups.join('\n');
+        updateHighlightRules(groups);
+    }
 }
 
 function saveConfig() {
@@ -376,45 +567,33 @@ function saveConfig() {
             Parity: document.getElementById('parity-select').value
         },
         UI: {
-            Font: document.getElementById('font-input').value || "Nerd Font Mono",
+            Font: document.getElementById('font-input').value || 'Nerd Font Mono',
             FontSize: parseInt(document.getElementById('fontsize-input').value) || 14,
             Timestamp: timestampEnabled,
-            Ansi: ansiEnabled
+            Shell: shellEnabled
         },
         Highlight: {
             Groups: document.getElementById('highlight-input').value
                 .split('\n')
-                .map(line => line.trim())
-                .filter(line => line !== '')
+                .map(l => l.trim())
+                .filter(l => l !== '')
         },
-        Log: {
-            Path: "./logs"
-        }
+        Log: { Path: './logs' }
     };
 
-    console.log('Saving configuration:', config);
-
-    fetch('/saveconfig', { 
-        method: 'POST', 
-        headers: { 
-            'Content-Type': 'application/json' 
-        },
+    fetch('/saveconfig', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
     })
     .then(response => response.json())
     .then(data => {
-        if (data.status === 'ok') {
-            alert('Configuration saved');
-            applyFontSettings(config.UI.Font, config.UI.FontSize);
-            updateHighlightRules(config.Highlight.Groups);
-            updatePortInfo(config.Serial.Port, config.Serial.Baud);
-        } else {
-            alert('Save failed: ' + (data.message || 'Unknown error'));
-        }
+        if (data.status === 'ok') alert('Configuration saved');
+        else alert('Save failed: ' + (data.message || 'Unknown error'));
     })
-    .catch(error => {
-        console.error('Error saving configuration:', error);
-        alert('Error saving configuration: ' + error.message);
+    .catch(err => {
+        console.error('Save error:', err);
+        alert('Error saving configuration');
     });
 }
 
@@ -428,33 +607,30 @@ function saveConfigSilently() {
             Parity: document.getElementById('parity-select').value
         },
         UI: {
-            Font: document.getElementById('font-input').value || "Nerd Font Mono",
+            Font: document.getElementById('font-input').value || 'Nerd Font Mono',
             FontSize: parseInt(document.getElementById('fontsize-input').value) || 14,
             Timestamp: timestampEnabled,
-            Ansi: ansiEnabled
+            Shell: shellEnabled
         },
         Highlight: {
             Groups: document.getElementById('highlight-input').value
                 .split('\n')
-                .map(line => line.trim())
-                .filter(line => line !== '')
+                .map(l => l.trim())
+                .filter(l => l !== '')
         },
-        Log: {
-            Path: "./logs"
-        }
+        Log: { Path: './logs' }
     };
-    
-    fetch('/saveconfig', { 
-        method: 'POST', 
+
+    fetch('/saveconfig', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
     })
     .then(response => response.json())
     .then(data => {
-        if (data.status === 'ok') {
-            console.log('Configuration automatically saved');
-        }
-    });
+        if (data.status !== 'ok') console.warn('Silent save failed:', data.message);
+    })
+    .catch(err => console.warn('Silent save error:', err));
 }
 
 function showHelp() {
@@ -465,425 +641,22 @@ function showHelp() {
         <p><strong>F2:</strong> Connect/Disconnect serial port</p>
         <p><strong>F3:</strong> Scan serial ports</p>
         <p><strong>Esc:</strong> Close modal</p>
-        <p><strong>PageUp/PageDown or ↑↓:</strong> Scroll through history</p>
-        <p><strong>Tab:</strong> Send Tab character</p>
-        <p><strong>Enter:</strong> Send input content</p>
-        <p><strong>ASCII/HEX:</strong> Switch data mode</p>
-        <p><strong>Timestamp toggle:</strong> Control whether to show timestamp before messages</p>
-        <p><strong>ANSI toggle:</strong> Control whether to parse ANSI escape sequences for colored output</p>
+        <p><strong>↑/↓ in input box:</strong> Navigate command history (SHELL OFF only)</p>
+        <p><strong>Tab:</strong> Send Tab character (SHELL OFF)</p>
+        <p><strong>Enter:</strong> Send input content (SHELL OFF)</p>
+        <p><strong>ASCII/HEX:</strong> Switch display format (SHELL OFF only)</p>
+        <p><strong>Timestamp toggle:</strong> Show/Hide timestamp before messages</p>
+        <p><strong>SHELL toggle:</strong> Enable full terminal emulation (xterm.js) for control characters</p>
     `;
     document.getElementById('modal').style.display = 'block';
 }
 
-function sendData() {
-    const input = document.getElementById('input');
-    const data = input.value.trim();
-    if (data === '') return;
-
-    const formData = new FormData();
-    formData.append('data', data);
-
-    fetch('/send', { method: 'POST', body: formData })
-        .then(response => response.json())
-        .then(data => {
-            if (data.status !== 'ok') {
-                alert('Send failed: ' + data.message);
-            } else {
-                input.value = '';
-            }
-        });
-}
-
-function handleInputKeydown(event) {
-    if (event.key === 'Enter') {
-        event.preventDefault();
-        sendData();
-    } else if (event.key === 'Tab') {
-        event.preventDefault();
-        const formData = new FormData();
-        formData.append('data', '\t');
-
-        fetch('/send', { method: 'POST', body: formData });
-    }
-}
-
-let pendingMessages = [];
-let updateTimer = null;
-let isScrolling = false;
-
-function addToOutput(message) {
-    pendingMessages.push(message);
-    if (!updateTimer) {
-        updateTimer = setTimeout(updateOutputBatch, 16);
-    }
-}
-
-function updateOutputBatch() {
-    if (pendingMessages.length === 0) {
-        updateTimer = null;
-        return;
-    }
-
-    const output = document.getElementById('output');
-    const fragment = document.createDocumentFragment();
-    const shouldScroll = true;
-
-    const messagesToProcess = pendingMessages.splice(0, Math.min(50, pendingMessages.length));
-    
-    messagesToProcess.forEach(message => {
-        const html = applyHighlight(message);
-        const div = document.createElement('div');
-        div.innerHTML = html;
-        fragment.appendChild(div);
-    });
-
-    output.appendChild(fragment);
-
-    const maxMessages = 2000;
-    const children = output.children;
-    if (children.length > maxMessages) {
-        const toRemove = children.length - maxMessages;
-        for (let i = 0; i < toRemove; i++) {
-            if (children[0]) {
-                output.removeChild(children[0]);
-            }
-        }
-    }
-
-    if (shouldScroll) {
-        scrollToBottom();
-    }
-
-    if (pendingMessages.length > 0) {
-        updateTimer = setTimeout(updateOutputBatch, 0);
-    } else {
-        updateTimer = null;
-    }
-}
-
-function scrollToBottom() {
-    const output = document.getElementById('output');
-    output.scrollTop = output.scrollHeight;
-}
-
-function scrollOutput(direction) {
-    const output = document.getElementById('output');
-    const amount = output.clientHeight * 0.8;
-    output.scrollTop += amount * direction;
-}
-
-document.getElementById('output').addEventListener('scroll', function() {
-    isScrolling = true;
-    clearTimeout(this.scrollTimer);
-    this.scrollTimer = setTimeout(() => {
-        isScrolling = false;
-    }, 100);
-});
-
-function updateConnectionStatus(connected) {
-    isConnected = connected;
-    const status = document.getElementById('connection-status');
-    status.textContent = connected ? 'Connected' : 'Disconnected';
-    status.className = connected ? 'connected' : '';
-}
-
-function updateMode(mode) {
-    currentMode = mode;
-    document.getElementById('data-mode').textContent = 'Mode: ' + mode.toUpperCase();
-    
-    if (mode === 'ascii') {
-        document.getElementById('ascii-mode').checked = true;
-    } else {
-        document.getElementById('hex-mode').checked = true;
-    }
-}
-
-function updateTimestampStatus(enabled) {
-    console.log('Updating timestamp status to:', enabled);
-    timestampEnabled = enabled;
-    const statusElement = document.getElementById('timestamp-status');
-    if (statusElement) {
-        statusElement.textContent = `Timestamp: ${enabled ? 'ON' : 'OFF'}`;
-        if (enabled)
-            statusElement.classList.toggle('off', !enabled);
-    }
-    
-    if (enabled) {
-        document.getElementById('timestamp-on').checked = true;
-    } else {
-        document.getElementById('timestamp-off').checked = true;
-    }
-}
-
-function updateAnsiStatus(enabled) {
-    console.log('Updating ANSI status to:', enabled);
-    ansiEnabled = enabled;
-    const statusElement = document.getElementById('ansi-status');
-    if (statusElement) {
-        statusElement.textContent = `ANSI: ${enabled ? 'ON' : 'OFF'}`;
-        statusElement.classList.toggle('off', !enabled);
-    }
-    
-    if (enabled) {
-        document.getElementById('ansi-on').checked = true;
-    } else {
-        document.getElementById('ansi-off').checked = true;
-    }
-}
-
-function updateConfig(config) {
-    console.log('Updating configuration:', config);
-    
-    if (config.Serial) {
-        document.getElementById('port-input').value = config.Serial.Port || "COM1";
-        document.getElementById('baud-input').value = config.Serial.Baud || 9600;
-        document.getElementById('databits-select').value = config.Serial.Databits || 8;
-        document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1;
-        document.getElementById('parity-select').value = config.Serial.Parity || "N";
-        updatePortInfo(config.Serial.Port || "COM1", config.Serial.Baud || 9600);
-    }
-    
-    if (config.UI) {
-        document.getElementById('font-input').value = config.UI.Font || "Nerd Font Mono";
-        document.getElementById('fontsize-input').value = config.UI.FontSize || 14;
-        
-        updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true);
-        updateAnsiStatus(config.UI.Ansi !== undefined ? config.UI.Ansi : true);
-        
-        applyFontSettings(config.UI.Font || "Nerd Font Mono", config.UI.FontSize || 14);
-    }
-    
-    if (config.Highlight && config.Highlight.Groups) {
-        document.getElementById('highlight-input').value = Array.isArray(config.Highlight.Groups) 
-            ? config.Highlight.Groups.join('\n') 
-            : '';
-        updateHighlightRules(config.Highlight.Groups);
-    }
-}
-
-function loadConfig() {
-    fetch('/getconfig', { method: 'POST' })
-        .then(response => response.json())
-        .then(data => {
-            updateConfig(data.config);
-            updateConnectionStatus(data.connected);
-            updateMode(data.mode);
-        });
-}
-
-let highlightRules = [];
-
-function updateHighlightRules(groups) {
-    highlightRules = groups.map(item => {
-        const parts = item.split(":");
-        const pattern = parts[0];
-        const color = parts[1] || "yellow";
-        try {
-            return { regex: new RegExp(pattern, 'gi'), color };
-        } catch (err) {
-            console.warn('Invalid regex:', pattern);
-            return null;
-        }
-    }).filter(rule => rule !== null);
-}
-
-function stripAnsiBasic(str) {
-    return str.replace(/\x1B\[[0-?]*[ -\/]*[@-~]/g, "");
-}
-
-function applyHighlight(text) {
-    if (!ansiEnabled) {
-        let result = escapeHtml(stripAnsiBasic(text));
-        highlightRules.forEach(rule => {
-            result = result.replace(rule.regex, match => `<span style="color:${rule.color}; font-weight:600;">${match}</span>`);
-        });
-        return result;
-    } else {
-        return ansiToHtml(text);
-    }
-}
-
-function ansiToHtml(text) {
-    const escaped = escapeHtml(text);
-    
-    const colorMap = {
-        '0': '#000000',
-        '1': '#800000',
-        '2': '#008000',
-        '3': '#808000',
-        '4': '#000080',
-        '5': '#800080',
-        '6': '#008080',
-        '7': '#c0c0c0',
-        '8': '#808080',
-        '9': '#ff0000',
-        '10': '#00ff00',
-        '11': '#ffff00',
-        '12': '#0000ff',
-        '13': '#ff00ff',
-        '14': '#00ffff',
-        '15': '#ffffff'
-    };
-
-    const ansiRegex = /\x1b\[([0-9;]*)m/g;
-    const tokens = [];
-    let lastIndex = 0;
-    let match;
-    let currentStyle = {};
-
-    while ((match = ansiRegex.exec(escaped)) !== null) {
-        if (match.index > lastIndex) {
-            tokens.push({
-                text: escaped.substring(lastIndex, match.index),
-                style: {...currentStyle}
-            });
-        }
-
-        const codes = match[1].split(';').filter(c => c !== '');
-        
-        for (let code of codes) {
-            const num = parseInt(code, 10);
-            
-            if (num === 0) {
-                currentStyle = {};
-            } else if (num === 1) {
-                currentStyle.fontWeight = 'bold';
-            } else if (num === 2) {
-                currentStyle.opacity = '0.6';
-            } else if (num === 3) {
-                currentStyle.fontStyle = 'italic';
-            } else if (num === 4) {
-                currentStyle.textDecoration = (currentStyle.textDecoration ? currentStyle.textDecoration + ' ' : '') + 'underline';
-            } else if (num === 5) {
-                currentStyle.animation = 'blink 1s step-end infinite';
-            } else if (num === 7) {
-                currentStyle.filter = 'invert(1)';
-            } else if (num === 8) {
-                currentStyle.visibility = 'hidden';
-            } else if (num === 9) {
-                currentStyle.textDecoration = (currentStyle.textDecoration ? currentStyle.textDecoration + ' ' : '') + 'line-through';
-            } else if (num === 22) {
-                delete currentStyle.fontWeight;
-                delete currentStyle.opacity;
-            } else if (num === 23) {
-                delete currentStyle.fontStyle;
-            } else if (num === 24) {
-                if (currentStyle.textDecoration) {
-                    currentStyle.textDecoration = currentStyle.textDecoration.replace(/\bunderline\b/, '').trim();
-                    if (!currentStyle.textDecoration) delete currentStyle.textDecoration;
-                }
-            } else if (num === 25) {
-                delete currentStyle.animation;
-            } else if (num === 27) {
-                delete currentStyle.filter;
-            } else if (num === 28) {
-                delete currentStyle.visibility;
-            } else if (num === 29) {
-                if (currentStyle.textDecoration) {
-                    currentStyle.textDecoration = currentStyle.textDecoration.replace(/\bline-through\b/, '').trim();
-                    if (!currentStyle.textDecoration) delete currentStyle.textDecoration;
-                }
-            } else if (num >= 30 && num <= 37) {
-                currentStyle.color = colorMap[(num - 30).toString()] || '#000000';
-            } else if (num === 38) {
-                // Skip complex color codes
-            } else if (num === 39) {
-                delete currentStyle.color;
-            } else if (num >= 40 && num <= 47) {
-                currentStyle.backgroundColor = colorMap[(num - 40).toString()] || '#ffffff';
-            } else if (num === 48) {
-                // Skip complex color codes
-            } else if (num === 49) {
-                delete currentStyle.backgroundColor;
-            } else if (num >= 90 && num <= 97) {
-                currentStyle.color = colorMap[(num - 82).toString()] || '#ffffff';
-            } else if (num >= 100 && num <= 107) {
-                currentStyle.backgroundColor = colorMap[(num - 92).toString()] || '#ffffff';
-            }
-        }
-
-        lastIndex = match.index + match[0].length;
-    }
-
-    if (lastIndex < escaped.length) {
-        tokens.push({
-            text: escaped.substring(lastIndex),
-            style: {...currentStyle}
-        });
-    }
-
-    let html = '';
-    for (let token of tokens) {
-        if (!token.text) continue;
-        
-        const styles = [];
-        if (token.style.color) {
-            styles.push(`color: ${token.style.color}`);
-        }
-        if (token.style.backgroundColor) {
-            styles.push(`background-color: ${token.style.backgroundColor}`);
-        }
-        if (token.style.fontWeight) {
-            styles.push(`font-weight: ${token.style.fontWeight}`);
-        }
-        if (token.style.fontStyle) {
-            styles.push(`font-style: ${token.style.fontStyle}`);
-        }
-        if (token.style.textDecoration) {
-            styles.push(`text-decoration: ${token.style.textDecoration}`);
-        }
-        if (token.style.opacity) {
-            styles.push(`opacity: ${token.style.opacity}`);
-        }
-        if (token.style.animation) {
-            styles.push(`animation: ${token.style.animation}`);
-        }
-        if (token.style.filter) {
-            styles.push(`filter: ${token.style.filter}`);
-        }
-        if (token.style.visibility) {
-            styles.push(`visibility: ${token.style.visibility}`);
-        }
-        
-        if (styles.length > 0) {
-            html += `<span style="${styles.join('; ')}">${token.text}</span>`;
-        } else {
-            html += token.text;
-        }
-    }
-    
-    return html;
-}
-
-function escapeHtml(str) {
-    return str.replace(/[&<>"]+/g, tag => ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;'
-    }[tag]));
-}
-
-function applyFontSettings(font, size) {
-    const output = document.getElementById('output');
-    if (font) {
-        output.style.fontFamily = font;
-    }
-    if (size) {
-        output.style.fontSize = `${size}px`;
-    }
-    document.documentElement.style.setProperty('--output-font', font || 'Courier New, monospace');
-    document.documentElement.style.setProperty('--output-font-size', `${size}px`);
-}
-
-function updatePortInfo(port, baud) {
-    document.getElementById('port-info').textContent = `Port: ${port} | Baudrate: ${baud}`;
-    console.log('Port info updated:', port, baud);
+function closeModal() {
+    document.getElementById('modal').style.display = 'none';
 }
 
 function showPortSelection(ports) {
     const modalBody = document.getElementById('modal-body');
-    
     if (ports.length === 0) {
         modalBody.innerHTML = `
             <h3>Select Serial Port</h3>
@@ -895,46 +668,32 @@ function showPortSelection(ports) {
     } else {
         modalBody.innerHTML = `
             <h3>Select Serial Port</h3>
-            <p style="color: var(--text-muted); font-size: 0.9em; margin: 10px 0 20px 0;">Click button to select serial port, selected port will be automatically applied to configuration</p>
+            <p style="color: var(--text-muted); font-size: 0.9em; margin: 10px 0 20px 0;">Click button to select serial port</p>
             <div class="port-buttons-container" id="port-buttons-container"></div>
         `;
-        
         const container = document.getElementById('port-buttons-container');
-        let currentPort = document.getElementById('port-input').value;
-        
+        const currentPort = document.getElementById('port-input').value;
         ports.forEach(port => {
-            const button = document.createElement('button');
-            button.className = 'port-button';
-            button.textContent = port;
-            
-            if (port === currentPort) {
-                button.classList.add('selected');
-            }
-            
-            button.addEventListener('click', function() {
-                document.querySelectorAll('.port-button').forEach(btn => {
-                    btn.classList.remove('selected');
-                });
-                
-                this.classList.add('selected');
+            const btn = document.createElement('button');
+            btn.className = 'port-button';
+            btn.textContent = port;
+            if (port === currentPort) btn.classList.add('selected');
+            btn.addEventListener('click', () => {
                 selectPort(port);
-                setTimeout(closeModal, 2000);
+                setTimeout(closeModal, 1000);
             });
-            
-            container.appendChild(button);
+            container.appendChild(btn);
         });
     }
 }
 
-function showPortSelectionError(errorMessage) {
+function showPortSelectionError(msg) {
     const modalBody = document.getElementById('modal-body');
     modalBody.innerHTML = `
         <h3>Serial Port Scan Failed</h3>
-        <p style="color: var(--error-color); text-align: center; margin: 20px 0;">
-            ${errorMessage || 'Unknown error'}
-        </p>
+        <p style="color: var(--error-color); text-align: center; margin: 20px 0;">${msg || 'Unknown error'}</p>
         <div class="port-buttons-container">
-            <button class="port-button empty">Scan failed, please try again</button>
+            <button class="port-button empty">Scan failed, try again</button>
         </div>
     `;
 }
@@ -943,19 +702,9 @@ function selectPort(port) {
     document.getElementById('port-input').value = port;
     const formData = new FormData();
     formData.append('port', port);
-    
-    fetch('/setport', { 
-        method: 'POST', 
-        body: formData 
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.status === 'ok') {
-            updatePortInfo(port, document.getElementById('baud-input').value);
-        }
-    });
-}
-
-function closeModal() {
-    document.getElementById('modal').style.display = 'none';
+    fetch('/setport', { method: 'POST', body: formData })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'ok') updatePortInfo(port, document.getElementById('baud-input').value);
+        });
 }
