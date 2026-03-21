@@ -1,4 +1,4 @@
-﻿# SerialZero
+# SerialZero
 
 > **SerialZero** — A professional, elegant serial port assistant with a modern Web UI.
 
@@ -8,7 +8,6 @@
 
 ## 📌 Overview / 项目概述
 
-<!-- Logo 与介绍区域 - 居中并排布局 -->
 <div align="center">
   <div style="
     display: flex;
@@ -33,55 +32,72 @@
 ---
 
 ## 🎨 Screenshots / 截图
- 
+
 <p align="center">
   <table>
     <tr>
       <!-- 第一行 -->
       <td align="center">
         <img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/ansi.png" width="500" alt=""><br>
-        <strong>ANSI</strong>
+        <strong>SHELL</strong>
       </td>
       <td align="center">
         <img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/highlight.png" width="500" alt=""><br>
-        <strong>Highlight</strong>
+        <strong>NOMAL</strong>
       </td>
     </tr>
   </table>
 </p>
 
+
 ---
 
 ## ✨ Features / 功能亮点
 
-- ✅ **Web UI + 浏览器访问 (Web UI + Browser Access)**  
-  &nbsp;&nbsp;&nbsp;&nbsp;*无需安装客户端，使用浏览器即可操作。*  
-  &nbsp;&nbsp;&nbsp;&nbsp;*No client installation required, accessible via browser.*
-- ✅ **实时串口收发 (Real-time Serial Communication)**  
-  &nbsp;&nbsp;&nbsp;&nbsp;*支持高频率（ms 级）数据接收与发送。*  
-  &nbsp;&nbsp;&nbsp;&nbsp;*Supports high-frequency (millisecond-level) data transmission and reception.*
-...
+- **Elegant UI** / **优雅的UI界面**  
+  Access via `localhost:8080`  
+  通过对 `localhost:8080` 端口进行访问
+
+- **Terminal Emulation** / **终端模拟功能**  
+  Correctly handles ANSI escape codes and terminal control characters, rendering them exactly as they appear  
+  能够正确转义 ANSI，对终端的控制字符做到原模原样的呈现
+
+- **Traditional Serial Communication** / **传统串口收发**  
+  Filters out control characters and displays messages as-is  
+  过滤控制字符后，将消息原模原样呈现
+
+- **Automatic Logging** / **自动日志**  
+  Logs are saved in the `./logs` directory with the format `COM4_20260322_14:33:34.log`, where each log file corresponds to a session from connection to disconnection  
+  会在目录下 `./logs` 下按照 `COM4_20260322_14:33:34.log` 的格式，以连接端口和断开作为一次日志进行输出
+
+- **Timestamp Support** / **时间戳支持**  
+  Option to prepend timestamps to messages  
+  可自动控制在消息前是否附加时间戳
+
+- **HEX Support** / **HEX 支持**  
+  Supports traditional serial communication with both ASCII and HEX display and sending modes  
+  支持传统的串口收发，可按照 ASCII 或是 HEX 进行发送和显示
+
+- **Custom Highlight Groups** / **高亮组自定义**  
+  Customizable highlight groups to match personal logging preferences  
+  可通过自行定义高亮组，用于配合自己的日志习惯进行呈现
+
+- **Message History** / **消息发送历史**  
+  Stores up to 100 past messages; use the `↑` arrow key to quickly reuse the previous command/message  
+  会保存近 100 条历史消息，可通过 `↑` 键直接使用上一次的命令/消息
 
 ---
 
 ## 🚀 Quick Start / 快速开始
 
-```bash
-# Clone
-git clone https://github.com/Astor-Zore/SerialZero.git
-cd SerialZero
+1. Run `SerialZero.exe`  
+   运行 `SerialZero.exe`
 
-# Build
-go build -o SerialZero
+2. Open `localhost:8080` in your browser  
+   在浏览器打开 `localhost:8080`
 
-# Run
-./SerialZero
-
-# Open in browser
-# -> http://localhost:8080
-```
-
-> **Tip:** Run from PowerShell or CMD on Windows.
+3. Select and open the desired serial port  
+   选择并打开串口
 
 ---
 
@@ -91,31 +107,29 @@ Edit `config.toml` in the project root (a default file is generated on first run
 
 ```toml
 [serial]
-port = "COM1"
-baud = 9600
-databits = 8
-stopbits = 1
-parity = "N"
+  port = "COM43"
+  baud = 115200
+  databits = 8
+  stopbits = 1
+  parity = "N"
 
 [log]
-path = "./logs"
-
-[highlight]
-groups = [
-  # Pattern matching is case-insensitive. Format: "pattern:color"
-  # Example: "ok:#00ff00" or "ERROR:#ff0000"
-]
+  path = "./logs"
 
 [ui]
-# Font name and size (example: "Consolas" / 12)
-font = "Consolas"
-fontsize = 12
+  font = "CaskaydiaMono NF"
+  fontsize = 14
+  timestamp = true
+  shell = true
 
-# Show timestamps in the log output (true / false)
-showTimestamp = true
+[highlight]
+  groups = ["ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"]
+
 ```
 
 ---
+
+
 
 ## 🧭 Usage / 使用说明
 
@@ -128,7 +142,7 @@ showTimestamp = true
 | Scan ports | `F3` | 扫描可用串口列表 |
 | Change baud rate | `F4` | 弹窗修改波特率 |
 | Close modal | `Esc` | 关闭当前模态窗口 |
-| Scroll history | `PageUp/PageDown` / `↑/↓` | 翻页查看历史记录 |
+| CMD history | `PageUp/PageDown` / `↑/↓` | 翻页查看历史记录 |
 
 ### Highlight Rules / 高亮规则
 
@@ -152,7 +166,7 @@ go build -o SerialZero.exe
 
 ## 🤝 Contributing / 贡献
 
-None
+[Astor-Zero]([Astor-Zore (Astor.Jiang)](https://github.com/Astor-Zore))
 
 ---
 
