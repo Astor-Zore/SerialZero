@@ -3,7 +3,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"embed"
@@ -16,9 +15,9 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,6 +30,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/tarm/serial"
+	"golang.org/x/sys/windows/registry"
 )
 
 //go:embed static
@@ -67,22 +67,20 @@ type Config struct {
 
 // App main struct
 type App struct {
-	config      Config
-	port        *serial.Port
-	logFile     *os.File
-	logWriter   *bufio.Writer
-	history     []string
+	config     Config
+	port       *serial.Port
+	history    []string
 	isConnected bool
-	clients     map[string]*Client
-	clientsMu   sync.RWMutex
+	clients    map[string]*Client
+	clientsMu  sync.RWMutex
 	sendHistory []string
-	dataMode    string // "ascii" or "hex"
-	writeChan   chan []byte
+	dataMode   string // "ascii" or "hex"
+	writeChan  chan []byte
 	receiveChan chan []byte
-	mu          sync.Mutex
-	httpServer  *http.Server
-	ctx         context.Context
-	cancel      context.CancelFunc
+	mu         sync.Mutex
+	httpServer *http.Server
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
 // Client wraps websocket connection
@@ -92,12 +90,10 @@ type Client struct {
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true
-	},
+	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// ANSI regex for stripping (only used for logging)
+// ANSI regex for stripping
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 // Windows API functions
@@ -107,28 +103,22 @@ var (
 	procAllocConsole = modkernel32.NewProc("AllocConsole")
 )
 
-// hideConsole detaches the process from its console, effectively hiding the window.
 func hideConsole() {
 	procFreeConsole.Call()
 }
 
-// showConsole allocates a new console window and redirects stdout/stderr to it.
 func showConsole() {
 	procAllocConsole.Call()
-
-	// Redirect stdout and stderr to the new console.
 	outFile, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0)
 	if err == nil {
 		os.Stdout = outFile
 		os.Stderr = outFile
 		log.SetOutput(outFile)
 	}
-	// Also redirect fmt.Println etc.
 	fmt.Println("Console opened. SerialZero is running.")
 	fmt.Println("Web UI: http://localhost:8080")
 }
 
-// redirectStdoutToNull redirects standard output and error to NUL to suppress console output.
 func redirectStdoutToNull() {
 	nullFile, err := os.OpenFile("NUL", os.O_WRONLY, 0)
 	if err == nil {
@@ -139,11 +129,9 @@ func redirectStdoutToNull() {
 }
 
 func main() {
-	// Hide the console window and redirect stdout/stderr to NUL at startup.
 	hideConsole()
 	redirectStdoutToNull()
 
-	// Create a context that we can cancel on exit.
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
 		clients:     make(map[string]*Client),
@@ -156,22 +144,17 @@ func main() {
 	}
 	app.loadConfig()
 
-	// Start the web server in a goroutine.
 	go app.runWebServer()
 
-	// Start system tray (blocks until systray.Quit() is called).
 	systray.Run(func() {
-		// OnReady
 		systray.SetIcon(iconData)
 		systray.SetTooltip("SerialZero - http://localhost:8080")
-
 		mOpenUI := systray.AddMenuItem("Open Web UI", "Open http://localhost:8080 in browser")
 		mShowConsole := systray.AddMenuItem("Show Console", "Show the console window")
 		mHideConsole := systray.AddMenuItem("Hide Console", "Hide the console window")
 		systray.AddSeparator()
 		mQuit := systray.AddMenuItem("Quit", "Exit the application")
 
-		// Handle menu clicks.
 		go func() {
 			for {
 				select {
@@ -188,7 +171,6 @@ func main() {
 			}
 		}()
 	}, func() {
-		// OnExit
 		if app.cancel != nil {
 			app.cancel()
 		}
@@ -197,7 +179,6 @@ func main() {
 			defer cancel()
 			app.httpServer.Shutdown(shutdownCtx)
 		}
-		// Clean up serial port if open.
 		if app.port != nil {
 			app.port.Close()
 		}
@@ -205,29 +186,22 @@ func main() {
 	})
 }
 
-// runWebServer configures Gin and starts the HTTP server.
 func (a *App) runWebServer() {
-	gin.SetMode(gin.ReleaseMode) // Suppress Gin's startup log to avoid console noise.
+	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery()) // Keep panic recovery but no logger (we handle logs ourselves).
+	r.Use(gin.Recovery())
 
-	// Extract the static subdirectory from embedded filesystem.
 	staticFS, err := fs.Sub(staticEmbed, "static")
 	if err != nil {
 		log.Printf("Failed to get static sub-fs: %v", err)
 		return
 	}
-
-	// Serve embedded static files.
 	r.StaticFS("/static", http.FS(staticFS))
-
-	// Serve embedded index.html.
 	r.GET("/", func(c *gin.Context) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(indexHTML))
 	})
 
 	r.GET("/ws", a.handleWebSocket)
-
 	r.POST("/connect", a.handleConnect)
 	r.POST("/disconnect", a.handleDisconnect)
 	r.POST("/scan", a.handleScan)
@@ -239,33 +213,27 @@ func (a *App) runWebServer() {
 	r.POST("/getconfig", a.handleGetConfig)
 	r.POST("/saveconfig", a.handleSaveConfig)
 
-	a.httpServer = &http.Server{
-		Addr:    ":8080",
-		Handler: r,
-	}
-
-	// Start listening in a goroutine so we can handle graceful shutdown.
+	a.httpServer = &http.Server{Addr: ":8080", Handler: r}
 	go func() {
 		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()
-
-	// Wait for context cancellation (systray quit).
 	<-a.ctx.Done()
 }
 
-// ---------- Serial Port Operations (unchanged) ----------
+// ---------- Serial Port Operations ----------
+
 func (a *App) handleWebSocket(c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
-		log.Println("WebSocket upgrade failed:", err)
 		return
 	}
 	clientID := uuid.New().String()
 	a.clientsMu.Lock()
 	a.clients[clientID] = &Client{conn: conn}
 	a.clientsMu.Unlock()
+
 	defer func() {
 		a.clientsMu.Lock()
 		delete(a.clients, clientID)
@@ -274,10 +242,7 @@ func (a *App) handleWebSocket(c *gin.Context) {
 	}()
 
 	a.sendToClient(clientID, map[string]interface{}{
-		"type":      "config",
-		"config":    a.config,
-		"connected": a.isConnected,
-		"mode":      a.dataMode,
+		"type": "config", "config": a.config, "connected": a.isConnected, "mode": a.dataMode,
 	})
 
 	for {
@@ -297,15 +262,12 @@ func (a *App) broadcast(message interface{}) {
 	a.clientsMu.RUnlock()
 
 	for id, client := range clientsCopy {
-		if client == nil {
-			continue
-		}
+		if client == nil { continue }
 		client.mu.Lock()
 		client.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 		err := client.conn.WriteMessage(websocket.TextMessage, data)
 		client.mu.Unlock()
 		if err != nil {
-			log.Printf("WebSocket write error for %s: %v", id, err)
 			a.clientsMu.Lock()
 			if cur, ok := a.clients[id]; ok && cur == client {
 				delete(a.clients, id)
@@ -321,15 +283,13 @@ func (a *App) sendToClient(clientID string, message interface{}) {
 	a.clientsMu.RLock()
 	client, ok := a.clients[clientID]
 	a.clientsMu.RUnlock()
-	if !ok || client == nil {
-		return
-	}
+	if !ok || client == nil { return }
+
 	client.mu.Lock()
 	client.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	err := client.conn.WriteMessage(websocket.TextMessage, data)
 	client.mu.Unlock()
 	if err != nil {
-		log.Printf("sendToClient error for %s: %v", clientID, err)
 		a.clientsMu.Lock()
 		if cur, ok := a.clients[clientID]; ok && cur == client {
 			delete(a.clients, clientID)
@@ -359,15 +319,14 @@ func (a *App) handleConnect(c *gin.Context) {
 	}
 	a.port = port
 	a.isConnected = true
-	a.openLogFile()
 	a.writeChan = make(chan []byte, 1024)
 	a.receiveChan = make(chan []byte, 32768)
 	go a.readData()
 	go a.processReceiver()
 	go a.writeLoop()
+
 	a.broadcast(map[string]interface{}{
-		"type":    "status",
-		"message": fmt.Sprintf("Serial port %s connected", a.config.Serial.Port),
+		"type": "status", "message": fmt.Sprintf("Serial port %s connected", a.config.Serial.Port),
 	})
 	c.JSON(200, gin.H{"status": "connected"})
 }
@@ -382,44 +341,27 @@ func (a *App) handleDisconnect(c *gin.Context) {
 		a.port = nil
 	}
 	a.isConnected = false
-	if a.logFile != nil {
-		a.logWriter.Flush()
-		a.logFile.Close()
-		a.logFile = nil
-	}
-	if a.writeChan != nil {
-		close(a.writeChan)
-		a.writeChan = nil
-	}
-	if a.receiveChan != nil {
-		close(a.receiveChan)
-		a.receiveChan = nil
-	}
-	a.broadcast(map[string]interface{}{
-		"type":    "status",
-		"message": "Serial port disconnected",
-	})
+	if a.writeChan != nil { close(a.writeChan); a.writeChan = nil }
+	if a.receiveChan != nil { close(a.receiveChan); a.receiveChan = nil }
+
+	a.broadcast(map[string]interface{}{"type": "status", "message": "Serial port disconnected"})
 	c.JSON(200, gin.H{"status": "disconnected"})
 }
 
+// 【极速优化】通过直接读取注册表扫描串口，毫秒级返回
 func (a *App) handleScan(c *gin.Context) {
-	cmd := exec.Command("powershell", "-Command", "Get-CimInstance Win32_SerialPort | Select-Object -ExpandProperty DeviceID")
-	out, err := cmd.Output()
-	if err != nil {
-		cmd = exec.Command("powershell", "-Command", "Get-WmiObject Win32_SerialPort | Select-Object -ExpandProperty DeviceID")
-		out, err = cmd.Output()
-		if err != nil {
-			c.JSON(200, gin.H{"status": "error", "message": err.Error()})
-			return
-		}
-	}
-	portsStr := strings.TrimSpace(string(out))
 	var ports []string
-	if portsStr != "" {
-		ports = strings.Split(portsStr, "\r\n")
-		for i, p := range ports {
-			ports[i] = strings.TrimSpace(p)
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DEVICEMAP\SERIALCOMM`, registry.QUERY_VALUE)
+	if err == nil {
+		defer k.Close()
+		names, _ := k.ReadValueNames(0)
+		for _, name := range names {
+			val, _, err := k.GetStringValue(name)
+			if err == nil {
+				ports = append(ports, val)
+			}
 		}
+		sort.Strings(ports)
 	}
 	c.JSON(200, gin.H{"status": "ok", "ports": ports})
 }
@@ -437,9 +379,7 @@ func (a *App) handleSetBaud(c *gin.Context) {
 
 func (a *App) handleSetPort(c *gin.Context) {
 	port := c.PostForm("port")
-	if port != "" {
-		a.config.Serial.Port = port
-	}
+	if port != "" { a.config.Serial.Port = port }
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -447,10 +387,7 @@ func (a *App) handleSetMode(c *gin.Context) {
 	mode := c.PostForm("mode")
 	if mode == "ascii" || mode == "hex" {
 		a.dataMode = mode
-		a.broadcast(map[string]interface{}{
-			"type": "mode",
-			"mode": a.dataMode,
-		})
+		a.broadcast(map[string]interface{}{"type": "mode", "mode": a.dataMode})
 	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
@@ -462,12 +399,7 @@ func (a *App) handleClear(c *gin.Context) {
 }
 
 func (a *App) handleGetConfig(c *gin.Context) {
-	c.JSON(200, gin.H{
-		"config":      a.config,
-		"connected":   a.isConnected,
-		"mode":        a.dataMode,
-		"sendHistory": a.sendHistory,
-	})
+	c.JSON(200, gin.H{"config": a.config, "connected": a.isConnected, "mode": a.dataMode, "sendHistory": a.sendHistory})
 }
 
 func (a *App) handleSaveConfig(c *gin.Context) {
@@ -476,36 +408,17 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to parse configuration: " + err.Error()})
 		return
 	}
-	// Apply defaults if missing
-	if newConfig.Serial.Port == "" {
-		newConfig.Serial.Port = "COM1"
-	}
-	if newConfig.Serial.Baud == 0 {
-		newConfig.Serial.Baud = 9600
-	}
-	if newConfig.Serial.Databits == 0 {
-		newConfig.Serial.Databits = 8
-	}
-	if newConfig.Serial.Stopbits == 0 {
-		newConfig.Serial.Stopbits = 1
-	}
-	if newConfig.Serial.Parity == "" {
-		newConfig.Serial.Parity = "N"
-	}
-	if newConfig.UI.Font == "" {
-		newConfig.UI.Font = "Nerd Font Mono"
-	}
-	if newConfig.UI.FontSize == 0 {
-		newConfig.UI.FontSize = 14
-	}
-	if newConfig.Log.Path == "" {
-		newConfig.Log.Path = "./logs"
-	}
-	if newConfig.Highlight.Groups == nil {
-		newConfig.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
-	}
-	a.config = newConfig
+	if newConfig.Serial.Port == "" { newConfig.Serial.Port = "COM1" }
+	if newConfig.Serial.Baud == 0 { newConfig.Serial.Baud = 9600 }
+	if newConfig.Serial.Databits == 0 { newConfig.Serial.Databits = 8 }
+	if newConfig.Serial.Stopbits == 0 { newConfig.Serial.Stopbits = 1 }
+	if newConfig.Serial.Parity == "" { newConfig.Serial.Parity = "N" }
+	if newConfig.UI.Font == "" { newConfig.UI.Font = "Nerd Font Mono" }
+	if newConfig.UI.FontSize == 0 { newConfig.UI.FontSize = 14 }
+	if newConfig.Log.Path == "" { newConfig.Log.Path = "./logs" }
+	if newConfig.Highlight.Groups == nil { newConfig.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"} }
 
+	a.config = newConfig
 	file, err := os.Create("config.toml")
 	if err != nil {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to create config file: " + err.Error()})
@@ -516,13 +429,7 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to write config: " + err.Error()})
 		return
 	}
-
-	a.broadcast(map[string]interface{}{
-		"type":      "config",
-		"config":    a.config,
-		"connected": a.isConnected,
-		"mode":      a.dataMode,
-	})
+	a.broadcast(map[string]interface{}{"type": "config", "config": a.config, "connected": a.isConnected, "mode": a.dataMode})
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
@@ -556,75 +463,50 @@ func (a *App) handleSend(c *gin.Context) {
 	}
 	if data != "" && (len(a.sendHistory) == 0 || a.sendHistory[len(a.sendHistory)-1] != data) {
 		a.sendHistory = append(a.sendHistory, data)
-		if len(a.sendHistory) > 100 {
-			a.sendHistory = a.sendHistory[1:]
-		}
+		if len(a.sendHistory) > 100 { a.sendHistory = a.sendHistory[1:] }
 	}
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
 // ---------- Serial Read/Write Loops ----------
+
 func (a *App) readData() {
 	buf := make([]byte, 4096)
 	for {
-		if a.port == nil {
-			return
-		}
+		if a.port == nil { return }
 		n, err := a.port.Read(buf)
 		if err != nil {
-			if a.port == nil {
-				return
-			}
-			if err == io.EOF {
-				return
-			}
+			if a.port == nil { return }
+			if err == io.EOF { return }
 			if strings.Contains(err.Error(), "timeout") {
-				if n == 0 {
-					time.Sleep(10 * time.Millisecond)
-					continue
-				}
+				if n == 0 { time.Sleep(10 * time.Millisecond); continue }
 			} else {
-				log.Println("Read error:", err)
-				time.Sleep(10 * time.Millisecond)
-				continue
+				time.Sleep(10 * time.Millisecond); continue
 			}
 		}
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
-			if a.receiveChan != nil {
-				a.receiveChan <- data
-			}
+			if a.receiveChan != nil { a.receiveChan <- data }
 		}
 	}
 }
 
 func (a *App) writeLoop() {
 	for data := range a.writeChan {
-		if a.port == nil {
-			continue
-		}
+		if a.port == nil { continue }
 		remaining := data
 		for len(remaining) > 0 {
 			n, err := a.port.Write(remaining)
-			if err != nil {
-				log.Println("Write error:", err)
-				break
-			}
-			if n == 0 {
-				time.Sleep(5 * time.Millisecond)
-			}
+			if err != nil { break }
+			if n == 0 { time.Sleep(5 * time.Millisecond) }
 			remaining = remaining[n:]
 		}
 	}
 }
 
-// processReceiver handles incoming data and broadcasts to clients
 func (a *App) processReceiver() {
-	const (
-		flushInterval = 50 * time.Millisecond
-		maxBufferSize = 8192
-	)
+	const flushInterval = 50 * time.Millisecond
 	var pending []byte
 	timer := time.NewTimer(flushInterval)
 	timer.Stop()
@@ -634,38 +516,19 @@ func (a *App) processReceiver() {
 		select {
 		case b, ok := <-a.receiveChan:
 			if !ok {
-				if len(pending) > 0 {
-					a.processAndBroadcast(pending)
-				}
+				if len(pending) > 0 { a.processAndBroadcast(pending) }
 				return
 			}
 			pending = append(pending, b...)
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			if !timer.Stop() { select { case <-timer.C: default: } }
 			timer.Reset(flushInterval)
-
-			// Split by newline for natural line break
 			for {
 				idx := bytes.IndexByte(pending, '\n')
-				if idx < 0 {
-					break
-				}
+				if idx < 0 { break }
 				line := pending[:idx+1]
 				a.processAndBroadcast(line)
 				pending = pending[idx+1:]
 			}
-
-			if len(pending) > maxBufferSize {
-				log.Println("Buffer overflow, flushing")
-				a.processAndBroadcast(pending)
-				pending = nil
-				timer.Stop()
-			}
-
 		case <-timer.C:
 			if len(pending) > 0 {
 				a.processAndBroadcast(pending)
@@ -675,68 +538,33 @@ func (a *App) processReceiver() {
 	}
 }
 
-// processAndBroadcast formats a chunk of data according to current mode and broadcasts
 func (a *App) processAndBroadcast(data []byte) {
-	if len(data) == 0 {
-		return
-	}
-
+	if len(data) == 0 { return }
 	var msg string
 	if a.config.UI.Shell {
-		// SHELL ON: send raw data as is (xterm will handle ANSI)
 		msg = string(data)
-		// No timestamp added in shell mode
 	} else {
-		// SHELL OFF: format according to dataMode
 		if a.dataMode == "hex" {
 			hexStr := hex.EncodeToString(data)
 			var sb strings.Builder
 			for i, r := range hexStr {
-				if i > 0 && i%2 == 0 {
-					sb.WriteByte(' ')
-				}
+				if i > 0 && i%2 == 0 { sb.WriteByte(' ') }
 				sb.WriteRune(r)
 			}
 			msg = sb.String()
 		} else {
 			msg = strings.ToValidUTF8(string(data), "")
 		}
-		// Add timestamp if enabled
 		if a.config.UI.Timestamp {
 			timestamp := time.Now().Format("15:04:05.000")
 			msg = fmt.Sprintf("[%s] %s", timestamp, msg)
 		}
 	}
-
-	a.broadcast(map[string]interface{}{
-		"type":    "message",
-		"message": msg,
-	})
-
-	// Log to file (strip ANSI)
-	clean := ansiRegex.ReplaceAllString(string(data), "")
-	if a.logWriter != nil {
-		a.logWriter.WriteString(clean)
-		a.logWriter.Flush()
-	}
-}
-
-func (a *App) openLogFile() {
-	now := time.Now()
-	filename := fmt.Sprintf("%s_%s.log", a.config.Serial.Port, now.Format("20060102_150405"))
-	path := filepath.Join(a.config.Log.Path, filename)
-	f, err := os.Create(path)
-	if err != nil {
-		log.Printf("Failed to create log file: %v", err)
-		return
-	}
-	a.logFile = f
-	a.logWriter = bufio.NewWriter(f)
+	a.broadcast(map[string]interface{}{"type": "message", "message": msg})
 }
 
 func (a *App) loadConfig() {
 	if _, err := toml.DecodeFile("config.toml", &a.config); err != nil {
-		log.Printf("Failed to load configuration: %v, using default", err)
 		a.config.Serial.Port = "COM1"
 		a.config.Serial.Baud = 9600
 		a.config.Serial.Databits = 8
@@ -749,29 +577,18 @@ func (a *App) loadConfig() {
 		a.config.UI.Shell = true
 		a.config.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
 	}
-	if a.config.UI.Font == "" {
-		a.config.UI.Font = "Nerd Font Mono"
-	}
-	if a.config.UI.FontSize == 0 {
-		a.config.UI.FontSize = 14
-	}
+	if a.config.UI.Font == "" { a.config.UI.Font = "Nerd Font Mono" }
+	if a.config.UI.FontSize == 0 { a.config.UI.FontSize = 14 }
 	os.MkdirAll(a.config.Log.Path, 0755)
 }
 
-// openBrowser attempts to open the specified URL in the default browser.
 func openBrowser(url string) {
 	var err error
 	switch runtime.GOOS {
-	case "windows":
-		err = exec.Command("cmd", "/c", "start", url).Start()
-	case "darwin":
-		err = exec.Command("open", url).Start()
-	case "linux":
-		err = exec.Command("xdg-open", url).Start()
-	default:
-		err = fmt.Errorf("unsupported platform")
+	case "windows": err = exec.Command("cmd", "/c", "start", url).Start()
+	case "darwin": err = exec.Command("open", url).Start()
+	case "linux": err = exec.Command("xdg-open", url).Start()
+	default: err = fmt.Errorf("unsupported platform")
 	}
-	if err != nil {
-		log.Printf("Failed to open browser: %v", err)
-	}
+	if err != nil { log.Printf("Failed to open browser: %v", err) }
 }

@@ -3,106 +3,98 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SerialZero - Serial Port Assistant</title>
+    <title>SerialZero</title>
     <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/lib/xterm.css">
+    <link rel="stylesheet" href="/static/xterm.css">
 </head>
 <body>
-    <div class="sidebar">
-        <div class="config-panel">
-            <h3>Serial Port Configuration</h3>
-            <label>Port: <input type="text" id="port-input" value="COM1"></label>
-            <label>Baudrate: <input type="number" id="baud-input" value="9600"></label>
-            <label>Data Bits: <select id="databits-select">
-                <option value="8">8</option>
-                <option value="7">7</option>
-                <option value="6">6</option>
-                <option value="5">5</option>
-            </select></label>
-            <label>Stop Bits: <select id="stopbits-select">
-                <option value="1">1</option>
-                <option value="2">2</option>
-            </select></label>
-            <label>Parity: <select id="parity-select">
-                <option value="N">None</option>
-                <option value="E">Even</option>
-                <option value="O">Odd</option>
-            </select></label>
-            <label>Font: <input type="text" id="font-input" placeholder="Nerd Font Mono"></label>
-            <label>Font Size: <input type="number" id="fontsize-input" value="14" min="8" max="36"></label>
-            <label>Highlight Rules (each line pattern:color):<br>
-                <textarea id="highlight-input" rows="4" style="width:100%;"></textarea>
-            </label>
-            <label>ANSI Highlight Rules (effective when SHELL is OFF):<br>
-                <small style="color: var(--text-muted);">Supports regular expressions, e.g.: error:red, warn:yellow</small>
-            </label>
-            <button id="save-config-btn">Save Configuration</button>
+    <!-- 顶部工具栏 -->
+    <header class="toolbar">
+        <button id="toggle-sidebar-btn" class="icon-btn" title="Toggle Config">☰</button>
+        <div class="title">SerialZero</div>
+        <div class="status-bar">
+            <span id="connection-status">Disconnected</span>
+            <span id="port-info">COM1 | 9600</span>
         </div>
+        <div class="actions">
+            <button id="connect-btn" class="tool-btn">Connect</button>
+            <button id="scan-btn" class="tool-btn">Scan</button>
+            <button id="clear-btn" class="tool-btn">Clear</button>
+            <button id="export-btn" class="tool-btn" title="Export Log">Export</button>
+        </div>
+    </header>
 
-        <div class="control-panel">
-            <h3>Control Panel</h3>
-            <div class="mode-toggle">
-                <input type="radio" id="ascii-mode" name="mode" value="ascii" checked>
-                <label for="ascii-mode">ASCII</label>
-                <input type="radio" id="hex-mode" name="mode" value="hex">
-                <label for="hex-mode">HEX</label>
-                <div class="slider"></div>
+    <div class="main-container">
+        <!-- 左侧配置面板 -->
+        <aside id="sidebar" class="sidebar">
+            <div class="config-section">
+                <h3>Serial Port</h3>
+                <label>Port: <input type="text" id="port-input"></label>
+                <label>Baudrate: <input type="number" id="baud-input"></label>
+                <label>Data Bits: 
+                    <select id="databits-select">
+                        <option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option>
+                    </select>
+                </label>
+                <label>Stop Bits: 
+                    <select id="stopbits-select">
+                        <option value="1" selected>1</option><option value="2">2</option>
+                    </select>
+                </label>
+                <label>Parity: 
+                    <select id="parity-select">
+                        <option value="N" selected>None</option><option value="E">Even</option><option value="O">Odd</option>
+                    </select>
+                </label>
             </div>
-            
-            <div class="timestamp-toggle">
-                <input type="radio" id="timestamp-on" name="timestamp" value="on" checked>
-                <label for="timestamp-on">Timestamp ON</label>
-                <input type="radio" id="timestamp-off" name="timestamp" value="off">
-                <label for="timestamp-off">Timestamp OFF</label>
-                <div class="slider"></div>
+
+            <div class="config-section">
+                <h3>Display</h3>
+                <label>Font: <input type="text" id="font-input"></label>
+                <label>Font Size: <input type="number" id="fontsize-input"></label>
+                <div class="toggle-group">
+                    <span>Mode:</span>
+                    <input type="radio" id="ascii-mode" name="mode" value="ascii" checked><label for="ascii-mode">ASCII</label>
+                    <input type="radio" id="hex-mode" name="mode" value="hex"><label for="hex-mode">HEX</label>
+                </div>
+                <div class="toggle-group">
+                    <span>Timestamp:</span>
+                    <input type="radio" id="timestamp-on" name="timestamp" value="on" checked><label for="timestamp-on">ON</label>
+                    <input type="radio" id="timestamp-off" name="timestamp" value="off"><label for="timestamp-off">OFF</label>
+                </div>
+                <div class="toggle-group">
+                    <span>SHELL:</span>
+                    <input type="radio" id="shell-on" name="shell" value="on" checked><label for="shell-on">ON</label>
+                    <input type="radio" id="shell-off" name="shell" value="off"><label for="shell-off">OFF</label>
+                </div>
             </div>
-            
-            <div class="shell-toggle">
-                <input type="radio" id="shell-on" name="shell" value="on" checked>
-                <label for="shell-on">SHELL ON</label>
-                <input type="radio" id="shell-off" name="shell" value="off">
-                <label for="shell-off">SHELL OFF</label>
-                <div class="slider"></div>
+
+            <div class="config-section">
+                <h3>Highlight (regex:color)</h3>
+                <textarea id="highlight-input" rows="4"></textarea>
             </div>
-            
-            <div class="button-group">
-                <button id="connect-btn">Connect (F2)</button>
-                <button id="scan-btn">Scan Ports (F3)</button>
-                <button id="clear-btn">Clear Output</button>
+            <button id="save-config-btn" class="action-btn">Save Config</button>
+        </aside>
+
+        <!-- 核心终端区域 -->
+        <main class="terminal-wrapper">
+            <div id="output-container" class="output-container">
+                <div id="output" class="output" tabindex="0"></div>
             </div>
-        </div>
+            <div id="terminal-container" class="terminal-container" style="display:none;"></div>
+        </main>
     </div>
 
-    <div class="main-content">
-        <header>
-            <h1>SerialZero</h1>
-            <div class="status">
-                <span id="connection-status">Disconnected</span>
-                <span id="port-info">Port: COM1 | Baudrate: 9600</span>
-                <span id="data-mode">Mode: ASCII</span>
-                <span id="timestamp-status">Timestamp: ON</span>
-                <span id="shell-status">SHELL: ON</span>
-            </div>
-        </header>
-
-        <div class="output-area">
-            <div class="output-container" id="output-container" style="display: block;">
-                <div id="output" class="output"></div>
-            </div>
-            <div id="terminal-container" style="display: none;"></div>
+    <!-- 底部发送区域 -->
+    <footer id="input-area" class="input-area">
+        <button id="toggle-input-btn" class="toggle-input-btn" title="Toggle Input">▼ Send</button>
+        <div class="input-row">
+            <input type="text" id="input" placeholder="Type command here... (Enter to send)" autocomplete="off">
+            <button id="send-btn" class="action-btn">Send</button>
         </div>
+    </footer>
 
-        <div class="input-area" id="input-area">
-            <div class="input-row">
-                <input type="text" id="input" placeholder="Enter command... (Tab sends Tab, Enter sends)" autocomplete="off">
-            </div>
-            <div class="button-row">
-                <button id="send-btn">Send</button>
-                <button id="help-btn">Help (F1)</button>
-            </div>
-        </div>
-    </div>
-
+    <!-- 模态框 -->
     <div id="modal" class="modal">
         <div class="modal-content">
             <span class="close">&times;</span>
@@ -110,9 +102,8 @@
         </div>
     </div>
 
-    <!-- xterm.js and fit addon (local) -->
-    <script src="/static/lib/xterm.js"></script>
-    <script src="/static/lib/xterm-addon-fit.js"></script>
+    <script src="/static/xterm.js"></script>
+    <script src="/static/xterm-addon-fit.js"></script>
     <script src="/static/app.js"></script>
 </body>
 </html>
