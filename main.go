@@ -67,20 +67,20 @@ type Config struct {
 
 // App main struct
 type App struct {
-	config     Config
-	port       *serial.Port
-	history    []string
-	isConnected bool
-	clients    map[string]*Client
-	clientsMu  sync.RWMutex
-	sendHistory []string
-	dataMode   string // "ascii" or "hex"
-	writeChan  chan []byte
-	receiveChan chan []byte
-	mu         sync.Mutex
-	httpServer *http.Server
-	ctx        context.Context
-	cancel     context.CancelFunc
+	config       Config
+	port         *serial.Port
+	history      []string
+	isConnected  bool
+	clients      map[string]*Client
+	clientsMu    sync.RWMutex
+	sendHistory  []string
+	dataMode     string // "ascii" or "hex"
+	writeChan    chan []byte
+	receiveChan  chan []byte
+	mu           sync.Mutex
+	httpServer   *http.Server
+	ctx          context.Context
+	cancel       context.CancelFunc
 }
 
 // Client wraps websocket connection
@@ -142,13 +142,14 @@ func main() {
 		ctx:         ctx,
 		cancel:      cancel,
 	}
-	app.loadConfig()
 
+	app.loadConfig()
 	go app.runWebServer()
 
 	systray.Run(func() {
 		systray.SetIcon(iconData)
 		systray.SetTooltip("SerialZero - http://localhost:8080")
+
 		mOpenUI := systray.AddMenuItem("Open Web UI", "Open http://localhost:8080 in browser")
 		mShowConsole := systray.AddMenuItem("Show Console", "Show the console window")
 		mHideConsole := systray.AddMenuItem("Hide Console", "Hide the console window")
@@ -171,17 +172,13 @@ func main() {
 			}
 		}()
 	}, func() {
-		if app.cancel != nil {
-			app.cancel()
-		}
+		if app.cancel != nil { app.cancel() }
 		if app.httpServer != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			app.httpServer.Shutdown(shutdownCtx)
 		}
-		if app.port != nil {
-			app.port.Close()
-		}
+		if app.port != nil { app.port.Close() }
 		os.Exit(0)
 	})
 }
@@ -197,9 +194,7 @@ func (a *App) runWebServer() {
 		return
 	}
 	r.StaticFS("/static", http.FS(staticFS))
-	r.GET("/", func(c *gin.Context) {
-		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(indexHTML))
-	})
+	r.GET("/", func(c *gin.Context) { c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(indexHTML)) })
 
 	r.GET("/ws", a.handleWebSocket)
 	r.POST("/connect", a.handleConnect)
@@ -226,9 +221,8 @@ func (a *App) runWebServer() {
 
 func (a *App) handleWebSocket(c *gin.Context) {
 	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		return
-	}
+	if err != nil { return }
+
 	clientID := uuid.New().String()
 	a.clientsMu.Lock()
 	a.clients[clientID] = &Client{conn: conn}
@@ -242,12 +236,29 @@ func (a *App) handleWebSocket(c *gin.Context) {
 	}()
 
 	a.sendToClient(clientID, map[string]interface{}{
-		"type": "config", "config": a.config, "connected": a.isConnected, "mode": a.dataMode,
+		"type":      "config",
+		"config":    a.config,
+		"connected": a.isConnected,
+		"mode":      a.dataMode,
 	})
 
+	// 【关键修复】处理客户端发来的 WebSocket 消息，实现 Shell 模式的实时按键输入
 	for {
-		if _, _, err := conn.ReadMessage(); err != nil {
-			break
+		_, message, err := conn.ReadMessage()
+		if err != nil { break }
+		
+		var data map[string]interface{}
+		if err := json.Unmarshal(message, &data); err == nil {
+			if data["type"] == "input" {
+				if inputData, ok := data["data"].(string); ok {
+					if a.isConnected {
+						select {
+						case a.writeChan <- []byte(inputData):
+						default: // 丢弃如果队列满
+						}
+					}
+				}
+			}
 		}
 	}
 }
@@ -256,9 +267,7 @@ func (a *App) broadcast(message interface{}) {
 	data, _ := json.Marshal(message)
 	a.clientsMu.RLock()
 	clientsCopy := make(map[string]*Client, len(a.clients))
-	for id, c := range a.clients {
-		clientsCopy[id] = c
-	}
+	for id, c := range a.clients { clientsCopy[id] = c }
 	a.clientsMu.RUnlock()
 
 	for id, client := range clientsCopy {
@@ -269,9 +278,7 @@ func (a *App) broadcast(message interface{}) {
 		client.mu.Unlock()
 		if err != nil {
 			a.clientsMu.Lock()
-			if cur, ok := a.clients[id]; ok && cur == client {
-				delete(a.clients, id)
-			}
+			if cur, ok := a.clients[id]; ok && cur == client { delete(a.clients, id) }
 			a.clientsMu.Unlock()
 			client.conn.Close()
 		}
@@ -284,26 +291,20 @@ func (a *App) sendToClient(clientID string, message interface{}) {
 	client, ok := a.clients[clientID]
 	a.clientsMu.RUnlock()
 	if !ok || client == nil { return }
-
 	client.mu.Lock()
 	client.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	err := client.conn.WriteMessage(websocket.TextMessage, data)
 	client.mu.Unlock()
 	if err != nil {
 		a.clientsMu.Lock()
-		if cur, ok := a.clients[clientID]; ok && cur == client {
-			delete(a.clients, clientID)
-		}
+		if cur, ok := a.clients[clientID]; ok && cur == client { delete(a.clients, clientID) }
 		a.clientsMu.Unlock()
 		client.conn.Close()
 	}
 }
 
 func (a *App) handleConnect(c *gin.Context) {
-	if a.isConnected {
-		c.JSON(200, gin.H{"status": "already connected"})
-		return
-	}
+	if a.isConnected { c.JSON(200, gin.H{"status": "already connected"}); return }
 	cfg := &serial.Config{
 		Name:        a.config.Serial.Port,
 		Baud:        a.config.Serial.Baud,
@@ -313,10 +314,8 @@ func (a *App) handleConnect(c *gin.Context) {
 		ReadTimeout: time.Millisecond * 100,
 	}
 	port, err := serial.OpenPort(cfg)
-	if err != nil {
-		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
-		return
-	}
+	if err != nil { c.JSON(200, gin.H{"status": "error", "message": err.Error()}); return }
+
 	a.port = port
 	a.isConnected = true
 	a.writeChan = make(chan []byte, 1024)
@@ -325,30 +324,20 @@ func (a *App) handleConnect(c *gin.Context) {
 	go a.processReceiver()
 	go a.writeLoop()
 
-	a.broadcast(map[string]interface{}{
-		"type": "status", "message": fmt.Sprintf("Serial port %s connected", a.config.Serial.Port),
-	})
+	a.broadcast(map[string]interface{}{"type": "status", "message": fmt.Sprintf("Serial port %s connected", a.config.Serial.Port)})
 	c.JSON(200, gin.H{"status": "connected"})
 }
 
 func (a *App) handleDisconnect(c *gin.Context) {
-	if !a.isConnected {
-		c.JSON(200, gin.H{"status": "not connected"})
-		return
-	}
-	if a.port != nil {
-		a.port.Close()
-		a.port = nil
-	}
+	if !a.isConnected { c.JSON(200, gin.H{"status": "not connected"}); return }
+	if a.port != nil { a.port.Close(); a.port = nil }
 	a.isConnected = false
 	if a.writeChan != nil { close(a.writeChan); a.writeChan = nil }
 	if a.receiveChan != nil { close(a.receiveChan); a.receiveChan = nil }
-
 	a.broadcast(map[string]interface{}{"type": "status", "message": "Serial port disconnected"})
 	c.JSON(200, gin.H{"status": "disconnected"})
 }
 
-// 【极速优化】通过直接读取注册表扫描串口，毫秒级返回
 func (a *App) handleScan(c *gin.Context) {
 	var ports []string
 	k, err := registry.OpenKey(registry.LOCAL_MACHINE, `HARDWARE\DEVICEMAP\SERIALCOMM`, registry.QUERY_VALUE)
@@ -357,9 +346,7 @@ func (a *App) handleScan(c *gin.Context) {
 		names, _ := k.ReadValueNames(0)
 		for _, name := range names {
 			val, _, err := k.GetStringValue(name)
-			if err == nil {
-				ports = append(ports, val)
-			}
+			if err == nil { ports = append(ports, val) }
 		}
 		sort.Strings(ports)
 	}
@@ -369,10 +356,7 @@ func (a *App) handleScan(c *gin.Context) {
 func (a *App) handleSetBaud(c *gin.Context) {
 	baudStr := c.PostForm("baud")
 	baud, err := strconv.Atoi(baudStr)
-	if err != nil {
-		c.JSON(200, gin.H{"status": "error", "message": "Invalid baud rate"})
-		return
-	}
+	if err != nil { c.JSON(200, gin.H{"status": "error", "message": "Invalid baud rate"}); return }
 	a.config.Serial.Baud = baud
 	c.JSON(200, gin.H{"status": "ok"})
 }
@@ -420,47 +404,37 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 
 	a.config = newConfig
 	file, err := os.Create("config.toml")
-	if err != nil {
-		c.JSON(200, gin.H{"status": "error", "message": "Failed to create config file: " + err.Error()})
-		return
-	}
+	if err != nil { c.JSON(200, gin.H{"status": "error", "message": "Failed to create config file: " + err.Error()}); return }
 	defer file.Close()
-	if err := toml.NewEncoder(file).Encode(a.config); err != nil {
-		c.JSON(200, gin.H{"status": "error", "message": "Failed to write config: " + err.Error()})
-		return
-	}
+	if err := toml.NewEncoder(file).Encode(a.config); err != nil { c.JSON(200, gin.H{"status": "error", "message": "Failed to write config: " + err.Error()}); return }
+
 	a.broadcast(map[string]interface{}{"type": "config", "config": a.config, "connected": a.isConnected, "mode": a.dataMode})
 	c.JSON(200, gin.H{"status": "ok"})
 }
 
 func (a *App) handleSend(c *gin.Context) {
 	data := c.PostForm("data")
-	if !a.isConnected || a.port == nil {
-		c.JSON(200, gin.H{"status": "error", "message": "Serial port not connected"})
-		return
-	}
+	if !a.isConnected || a.port == nil { c.JSON(200, gin.H{"status": "error", "message": "Serial port not connected"}); return }
+
 	var sendData []byte
 	if a.dataMode == "hex" {
 		clean := strings.ReplaceAll(data, " ", "")
 		var err error
 		sendData, err = hex.DecodeString(clean)
-		if err != nil {
-			c.JSON(200, gin.H{"status": "error", "message": "Invalid HEX data"})
-			return
-		}
+		if err != nil { c.JSON(200, gin.H{"status": "error", "message": "Invalid HEX data"}); return }
 	} else {
 		sendData = []byte(data)
 	}
-	if len(sendData) == 0 {
-		c.JSON(200, gin.H{"status": "error", "message": "Empty payload"})
-		return
-	}
+
+	if len(sendData) == 0 { c.JSON(200, gin.H{"status": "error", "message": "Empty payload"}); return }
+
 	select {
 	case a.writeChan <- sendData:
 	default:
 		c.JSON(200, gin.H{"status": "error", "message": "Write queue full"})
 		return
 	}
+
 	if data != "" && (len(a.sendHistory) == 0 || a.sendHistory[len(a.sendHistory)-1] != data) {
 		a.sendHistory = append(a.sendHistory, data)
 		if len(a.sendHistory) > 100 { a.sendHistory = a.sendHistory[1:] }
@@ -469,7 +443,6 @@ func (a *App) handleSend(c *gin.Context) {
 }
 
 // ---------- Serial Read/Write Loops ----------
-
 func (a *App) readData() {
 	buf := make([]byte, 4096)
 	for {
@@ -542,7 +515,7 @@ func (a *App) processAndBroadcast(data []byte) {
 	if len(data) == 0 { return }
 	var msg string
 	if a.config.UI.Shell {
-		msg = string(data)
+		msg = string(data) // Shell 模式直接透传原始字节流（包含 ANSI 转义码），由前端 xterm 解析
 	} else {
 		if a.dataMode == "hex" {
 			hexStr := hex.EncodeToString(data)
@@ -586,9 +559,10 @@ func openBrowser(url string) {
 	var err error
 	switch runtime.GOOS {
 	case "windows": err = exec.Command("cmd", "/c", "start", url).Start()
-	case "darwin": err = exec.Command("open", url).Start()
-	case "linux": err = exec.Command("xdg-open", url).Start()
-	default: err = fmt.Errorf("unsupported platform")
+	case "darwin":  err = exec.Command("open", url).Start()
+	case "linux":   err = exec.Command("xdg-open", url).Start()
+	default:        err = fmt.Errorf("unsupported platform")
 	}
 	if err != nil { log.Printf("Failed to open browser: %v", err) }
 }
+

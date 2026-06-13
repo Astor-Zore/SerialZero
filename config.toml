@@ -1,5 +1,5 @@
 [serial]
-  port = "COM10"
+  port = "COM50"
   baud = 115200
   databits = 8
   stopbits = 1
@@ -12,7 +12,7 @@
   font = "CaskaydiaMono NF"
   fontsize = 14
   timestamp = true
-  shell = false
+  shell = true
 
 [highlight]
-  groups = ["12:#00ff00"]
+  groups = ["INFO:#bfd200"]
