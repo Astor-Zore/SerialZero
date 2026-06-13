@@ -31,7 +31,7 @@ document.addEventListener('DOMContentLoaded', function() {
         xtermLoaded = false;
     }
 
-    // 1. 立即同步 UI 状态，防止配置加载前出现闪烁（Send栏和Shell显示不一致）
+    // 立即同步 UI 状态，防止配置加载前出现闪烁
     syncShellUI(shellEnabled);
 
     initWebSocket();
@@ -43,7 +43,6 @@ document.addEventListener('DOMContentLoaded', function() {
     setupSidebarFocusManagement();
 });
 
-// 专门用于同步 Shell 相关的 UI 显隐
 function syncShellUI(enabled) {
     if (enabled) {
         outputContainer.style.display = 'none';
@@ -106,7 +105,6 @@ function setupEventListeners() {
 
     document.getElementById('toggle-sidebar-btn').addEventListener('click', () => {
         document.getElementById('sidebar').classList.toggle('collapsed');
-        // 侧边栏收缩会改变终端宽度，必须重新 fit
         setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250);
     });
 
@@ -197,7 +195,8 @@ function setMode(mode) {
 function setTimestamp(enabled) { timestampEnabled = enabled; updateTimestampStatus(enabled); saveConfigSilently(); }
 
 function setShellEnabled(enabled, shouldSave = true) {
-    if (shellEnabled === enabled) return;
+    // 【关键修复】如果状态没变，且不是“需要开启但终端未初始化”的情况，则跳过
+    if (shellEnabled === enabled && !(enabled && !term)) return;
     
     userActionLock = true;
     shellEnabled = enabled;
@@ -215,7 +214,9 @@ function setShellEnabled(enabled, shouldSave = true) {
         }
         
         if (!term) {
-            try { initTerminal(); } catch (e) {
+            try { 
+                initTerminal(); 
+            } catch (e) {
                 syncShellUI(false);
                 shellEnabled = false;
                 updateShellStatus(false);
@@ -224,11 +225,9 @@ function setShellEnabled(enabled, shouldSave = true) {
                 return;
             }
         } else { 
-            // 如果已经存在，可能是因为侧边栏切换导致隐藏，重新 fit
             setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50);
         }
         
-        // 转移之前在 output-container 中的文本到 xterm
         if (outputMessages.length > 0) {
             const plainText = outputMessages.map(msg => {
                 const div = document.createElement('div');
@@ -247,7 +246,6 @@ function setShellEnabled(enabled, shouldSave = true) {
         }
         
     } else {
-        // Shell 关闭，转移 xterm 中的内容回 output-container
         if (term) {
             const buffer = term.buffer.active;
             let shellOutput = '';
@@ -282,32 +280,27 @@ function initTerminal() {
         convertEol: false
     });
     
-    // 【关键修复】必须使用 FitAddon 让终端填满容器
     fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     
     term.open(termContainer);
     
-    // 选中复制
     term.onSelectionChange(() => {
         if (term.hasSelection()) navigator.clipboard.writeText(term.getSelection()).catch(err => {});
     });
 
-    // 【关键修复】按键必须通过 WebSocket 发送，否则 HTTP 延迟会导致 Shell 根本无法使用
     term.onData(data => {
         if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'input', data: data }));
         }
     });
     
-    // 监听容器大小变化，自动重新适配
     new ResizeObserver(() => {
         if (term && fitAddon && shellEnabled && termContainer.offsetWidth > 0) {
             try { fitAddon.fit(); } catch(e) {}
         }
     }).observe(termContainer);
     
-    // 初始化后延迟 fit，确保 DOM 已经完全渲染
     setTimeout(() => {
         if(term && fitAddon) fitAddon.fit();
         if (document.activeElement === document.body || document.activeElement === null || document.activeElement.tagName === 'DIV') {
@@ -501,7 +494,7 @@ function showPortSelection(ports) {
         btn.onclick = () => { 
             document.getElementById('port-input').value = port; 
             updatePortInfo(port, document.getElementById('baud-input').value); 
-            saveConfigSilently(); // 选择端口后自动保存
+            saveConfigSilently();
             closeModal(); 
         };
         list.appendChild(btn);
