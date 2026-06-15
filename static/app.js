@@ -4,9 +4,8 @@ let historyList = [];
 let historyIndex = 0;
 let isConnected = false;
 let currentMode = 'ascii';
-let shellEnabled = true; // 默认跟随 HTML 中的 radio 按钮状态
+let shellEnabled = true;
 let timestampEnabled = true;
-let highlightRules = [];
 let pendingMessages = [];
 let updateTimer = null;
 let outputMessages = [];
@@ -14,6 +13,10 @@ let term = null;
 let fitAddon = null;
 let xtermLoaded = false;
 let userActionLock = false;
+
+// --- 高亮性能优化：合并正则相关 ---
+let combinedHighlightRegex = null;
+let highlightColorMap = [];
 
 let termContainer = document.getElementById('terminal-container');
 let outputContainer = document.getElementById('output-container');
@@ -31,9 +34,7 @@ document.addEventListener('DOMContentLoaded', function() {
         xtermLoaded = false;
     }
 
-    // 立即同步 UI 状态，防止配置加载前出现闪烁
     syncShellUI(shellEnabled);
-
     initWebSocket();
     setupEventListeners();
     setupKeyboardShortcuts();
@@ -66,7 +67,12 @@ function initWebSocket() {
             switch(data.type) {
                 case 'message':
                     if (shellEnabled) {
-                        if (term) term.write(data.message);
+                        if (term) {
+                            // 【关键修复1】强制替换 \n 为 \r\n，彻底解决设备端缺 \r 导致的不换行错位
+                            let msg = data.message.replace(/\r?\n/g, '\r\n');
+                            // 【关键修复2】应用前端单次正则高亮
+                            term.write(applyShellHighlight(msg));
+                        }
                         else addToOutput(data.message);
                     } else {
                         addToOutput(data.message);
@@ -195,7 +201,6 @@ function setMode(mode) {
 function setTimestamp(enabled) { timestampEnabled = enabled; updateTimestampStatus(enabled); saveConfigSilently(); }
 
 function setShellEnabled(enabled, shouldSave = true) {
-    // 【关键修复】如果状态没变，且不是“需要开启但终端未初始化”的情况，则跳过
     if (shellEnabled === enabled && !(enabled && !term)) return;
     
     userActionLock = true;
@@ -214,9 +219,7 @@ function setShellEnabled(enabled, shouldSave = true) {
         }
         
         if (!term) {
-            try { 
-                initTerminal(); 
-            } catch (e) {
+            try { initTerminal(); } catch (e) {
                 syncShellUI(false);
                 shellEnabled = false;
                 updateShellStatus(false);
@@ -277,7 +280,7 @@ function initTerminal() {
         fontSize: parseInt(document.getElementById('fontsize-input').value) || 14, 
         fontFamily: document.getElementById('font-input').value || 'Consolas, monospace', 
         scrollback: 10000,
-        convertEol: false
+        convertEol: false // 关闭内置的，由上面 ws.onmessage 里手动替换，更彻底
     });
     
     fitAddon = new FitAddon.FitAddon();
@@ -308,6 +311,71 @@ function initTerminal() {
         }
     }, 200);
 }
+
+// ================= 高性能高亮逻辑 =================
+
+function hexToAnsi(hex) {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    if (!result) return '';
+    const r = parseInt(result[1], 16);
+    const g = parseInt(result[2], 16);
+    const b = parseInt(result[3], 16);
+    return `\x1b[1;38;2;${r};${g};${b}m`; // 加粗且着色
+}
+
+// 优化：将 N 个正则合并为 1 个大正则，只需遍历文本 1 次
+function updateHighlightRules(lines) {
+    let rules = lines.map(line => {
+        const parts = line.split(':');
+        if (parts.length < 2) return null;
+        try { return { regexStr: parts[0], color: parts.slice(1).join(':') }; } catch (e) { return null; }
+    }).filter(r => r !== null);
+
+    try {
+        const regexParts = rules.map(r => `(${r.regexStr})`);
+        highlightColorMap = rules.map(r => r.color);
+        
+        if (regexParts.length > 0) {
+            combinedHighlightRegex = new RegExp(regexParts.join('|'), 'gi');
+        } else {
+            combinedHighlightRegex = null;
+        }
+    } catch (e) {
+        console.error("Failed to combine highlight regex:", e);
+        combinedHighlightRegex = null;
+    }
+}
+
+// Shell 模式高亮：单次替换
+function applyShellHighlight(text) {
+    if (!combinedHighlightRegex) return text;
+    return text.replace(combinedHighlightRegex, function(match, ...groups) {
+        for (let i = 0; i < highlightColorMap.length; i++) {
+            if (groups[i] !== undefined) {
+                return hexToAnsi(highlightColorMap[i]) + match + '\x1b[0m';
+            }
+        }
+        return match;
+    });
+}
+
+// 普通模式高亮：单次替换
+function applyHighlight(text) {
+    let result = text.replace(/[&<>"]/g, tag => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[tag] || tag);
+    if (combinedHighlightRegex) {
+        result = result.replace(combinedHighlightRegex, function(match, ...groups) {
+            for (let i = 0; i < highlightColorMap.length; i++) {
+                if (groups[i] !== undefined) {
+                    return `<span style="color:${highlightColorMap[i]};font-weight:bold;">${match}</span>`;
+                }
+            }
+            return match;
+        });
+    }
+    return result;
+}
+
+// ==================================================
 
 function addToHistory(command) {
     if (!command || command.trim() === '' || shellEnabled) return;
@@ -394,20 +462,6 @@ function clearOutput(sendClear = true) {
     if (sendClear) fetch('/clear', { method: 'POST' });
     if (shellEnabled && term) term.clear();
     else { document.getElementById('output').innerHTML = ''; pendingMessages = []; outputMessages = []; }
-}
-
-function updateHighlightRules(lines) {
-    highlightRules = lines.map(line => {
-        const parts = line.split(':');
-        if (parts.length < 2) return null;
-        try { return { regex: new RegExp(parts[0], 'gi'), color: parts.slice(1).join(':') }; } catch (e) { return null; }
-    }).filter(r => r !== null);
-}
-
-function applyHighlight(text) {
-    let result = text.replace(/[&<>"]/g, tag => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[tag] || tag);
-    highlightRules.forEach(rule => { result = result.replace(rule.regex, match => `<span style="color:${rule.color}">${match}</span>`); });
-    return result;
 }
 
 function updateConnectionStatus(connected) {

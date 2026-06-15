@@ -15,4 +15,4 @@
   shell = true
 
 [highlight]
-  groups = ["INFO:#bfd200"]
+  groups = ["audio:#bfd200", "gain:#f16000"]
