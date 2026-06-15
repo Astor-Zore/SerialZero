@@ -10,6 +10,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/tarm/serial v0.0.0-20180830185346-98f6abe2eb07
 	github.com/webview/webview_go v0.0.0-20240831120633-6173450d4dd6
+	github.com/yuin/gopher-lua v1.1.2
 	golang.org/x/sys v0.41.0
 )
 

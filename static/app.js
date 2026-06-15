@@ -1,4 +1,5 @@
 // app.js
+
 let ws;
 let historyList = [];
 let historyIndex = 0;
@@ -13,10 +14,21 @@ let term = null;
 let fitAddon = null;
 let xtermLoaded = false;
 let userActionLock = false;
+let isScriptRunning = false;
 
-// --- 高亮性能优化：合并正则相关 ---
+// --- Highlight performance optimization ---
 let combinedHighlightRegex = null;
 let highlightColorMap = [];
+
+// --- Theme Presets Definition ---
+const themePresets = {
+    "Default": { Background: "#1e1e1e", Foreground: "#cccccc", Cursor: "#ffffff", Black: "#000000", Red: "#cd3131", Green: "#0dbc79", Yellow: "#e5e510", Blue: "#2472c8", Magenta: "#bc3fbc", Cyan: "#11a8cd", White: "#e5e5e5", BrightBlack: "#666666", BrightRed: "#f14c4c", BrightGreen: "#23d18b", BrightYellow: "#f5f543", BrightBlue: "#3b8eea", BrightMagenta: "#d670d6", BrightCyan: "#29b8db", BrightWhite: "#ffffff" },
+    "Dracula": { Background: "#282a36", Foreground: "#f8f8f2", Cursor: "#f8f8f2", Black: "#21222c", Red: "#ff5555", Green: "#50fa7b", Yellow: "#f1fa8c", Blue: "#bd93f9", Magenta: "#ff79c6", Cyan: "#8be9fd", White: "#f8f8f2", BrightBlack: "#6272a4", BrightRed: "#ff6e6e", BrightGreen: "#69ff94", BrightYellow: "#ffffa5", BrightBlue: "#d6acff", BrightMagenta: "#ff92df", BrightCyan: "#a4ffff", BrightWhite: "#ffffff" },
+    "Monokai": { Background: "#272822", Foreground: "#f8f8f2", Cursor: "#f8f8f0", Black: "#272822", Red: "#f92672", Green: "#a6e22e", Yellow: "#f4bf75", Blue: "#66d9ef", Magenta: "#ae81ff", Cyan: "#a1efe4", White: "#f8f8f2", BrightBlack: "#75715e", BrightRed: "#fd971f", BrightGreen: "#a6e22e", BrightYellow: "#e6db74", BrightBlue: "#66d9ef", BrightMagenta: "#ae81ff", BrightCyan: "#a1efe4", BrightWhite: "#f9f8f5" },
+    "Solarized": { Background: "#002b36", Foreground: "#839496", Cursor: "#93a1a1", Black: "#073642", Red: "#dc322f", Green: "#859900", Yellow: "#b58900", Blue: "#268bd2", Magenta: "#d33682", Cyan: "#2aa198", White: "#eee8d5", BrightBlack: "#002b36", BrightRed: "#cb4b16", BrightGreen: "#586e75", BrightYellow: "#657b83", BrightBlue: "#839496", BrightMagenta: "#6c71c4", BrightCyan: "#93a1a1", BrightWhite: "#fdf6e3" },
+    "Gruvbox": { Background: "#282828", Foreground: "#ebdbb2", Cursor: "#ebdbb2", Black: "#282828", Red: "#cc241d", Green: "#98971a", Yellow: "#d79921", Blue: "#458588", Magenta: "#b16286", Cyan: "#689d6a", White: "#a89984", BrightBlack: "#928374", BrightRed: "#fb4934", BrightGreen: "#b8bb26", BrightYellow: "#fabd2f", BrightBlue: "#83a598", BrightMagenta: "#d3869b", BrightCyan: "#8ec07c", BrightWhite: "#ebdbb2" },
+    "Nord": { Background: "#2e3440", Foreground: "#d8dee9", Cursor: "#d8dee9", Black: "#3b4252", Red: "#bf616a", Green: "#a3be8c", Yellow: "#ebcb8b", Blue: "#81a1c1", Magenta: "#b48ead", Cyan: "#88c0d0", White: "#e5e9f0", BrightBlack: "#4c566a", BrightRed: "#bf616a", BrightGreen: "#a3be8c", BrightYellow: "#ebcb8b", BrightBlue: "#81a1c1", BrightMagenta: "#b48ead", BrightCyan: "#8fbcbb", BrightWhite: "#eceff4" }
+};
 
 let termContainer = document.getElementById('terminal-container');
 let outputContainer = document.getElementById('output-container');
@@ -42,6 +54,7 @@ document.addEventListener('DOMContentLoaded', function() {
     addConfigChangeListeners();
     setupSmartCopy();
     setupSidebarFocusManagement();
+    listScripts(); // Initial load of scripts
 });
 
 function syncShellUI(enabled) {
@@ -68,15 +81,15 @@ function initWebSocket() {
                 case 'message':
                     if (shellEnabled) {
                         if (term) {
-                            // 【关键修复1】强制替换 \n 为 \r\n，彻底解决设备端缺 \r 导致的不换行错位
                             let msg = data.message.replace(/\r?\n/g, '\r\n');
-                            // 【关键修复2】应用前端单次正则高亮
                             term.write(applyShellHighlight(msg));
-                        }
-                        else addToOutput(data.message);
+                        } else addToOutput(data.message);
                     } else {
                         addToOutput(data.message);
                     }
+                    break;
+                case 'script_log': // Handle Lua script logs
+                    appendToScriptConsole(data.message);
                     break;
                 case 'config':
                     if (data.config) updateConfig(data.config);
@@ -118,13 +131,31 @@ function setupEventListeners() {
         inputArea.classList.toggle('collapsed');
     });
 
+    // Script Panel Controls (Now triggered from top toolbar)
+    document.getElementById('toggle-script-btn').addEventListener('click', () => {
+        const panel = document.getElementById('script-panel');
+        panel.classList.toggle('collapsed');
+        // Trigger resize for xterm after animation completes
+        setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250);
+    });
+
+    document.getElementById('refresh-scripts-btn').addEventListener('click', listScripts);
+    document.getElementById('run-script-btn').addEventListener('click', runScript);
+    document.getElementById('stop-script-btn').addEventListener('click', stopScript);
+
+    // Display Modes
     document.getElementById('ascii-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); });
     document.getElementById('hex-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); });
     document.getElementById('timestamp-on').addEventListener('change', function() { if (this.checked) setTimestamp(true); });
     document.getElementById('timestamp-off').addEventListener('change', function() { if (this.checked) setTimestamp(false); });
-    
     document.getElementById('shell-on').addEventListener('change', function() { if (this.checked) setShellEnabled(true); });
     document.getElementById('shell-off').addEventListener('change', function() { if (this.checked) setShellEnabled(false); });
+
+    // Theme Controls
+    document.getElementById('theme-preset-select').addEventListener('change', handleThemePresetChange);
+    document.getElementById('theme-bg').addEventListener('input', handleCustomThemeChange);
+    document.getElementById('theme-fg').addEventListener('input', handleCustomThemeChange);
+    document.getElementById('theme-cursor').addEventListener('input', handleCustomThemeChange);
 
     document.querySelector('.close').addEventListener('click', closeModal);
     window.addEventListener('click', (event) => { if (event.target == document.getElementById('modal')) closeModal(); });
@@ -164,6 +195,164 @@ function setupKeyboardShortcuts() {
     });
 }
 
+// ================= THEME LOGIC =================
+
+/**
+ * @brief Adjusts a hex color by a specific amount (lighter or darker).
+ * @param {string} hex The hex color string (e.g., "#1e1e1e").
+ * @param {number} amount The amount to adjust (positive for lighter, negative for darker).
+ * @returns {string} The adjusted hex color.
+ */
+function adjustColor(hex, amount) {
+    hex = hex.replace('#', '');
+    let r = parseInt(hex.substring(0, 2), 16);
+    let g = parseInt(hex.substring(2, 4), 16);
+    let b = parseInt(hex.substring(4, 6), 16);
+    
+    r = Math.min(255, Math.max(0, r + amount));
+    g = Math.min(255, Math.max(0, g + amount));
+    b = Math.min(255, Math.max(0, b + amount));
+    
+    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+/**
+ * @brief Applies theme data to both CSS variables and Xterm.js.
+ * @param {object} themeData The theme object containing 16 colors.
+ */
+function applyTheme(themeData) {
+    if (!themeData) return;
+    const root = document.documentElement;
+    
+    // Determine if it's a dark theme based on background luminance
+    const bgLuminance = parseInt(themeData.Background.substring(1, 3), 16) + 
+                        parseInt(themeData.Background.substring(3, 5), 16) + 
+                        parseInt(themeData.Background.substring(5, 7), 16);
+    const isDark = bgLuminance < 384; // 128 * 3
+    const step = isDark ? 15 : -15;
+
+    // Apply to CSS variables for Normal Mode & UI Shell (Dynamic Calculation)
+    root.style.setProperty('--bg-primary', themeData.Background);
+    root.style.setProperty('--bg-secondary', adjustColor(themeData.Background, step));
+    root.style.setProperty('--bg-tertiary', adjustColor(themeData.Background, step * 2));
+    root.style.setProperty('--border-color', adjustColor(themeData.Background, step * 3));
+    root.style.setProperty('--text-primary', themeData.Foreground);
+    root.style.setProperty('--text-secondary', adjustColor(themeData.Foreground, isDark ? -80 : 80));
+    root.style.setProperty('--accent-color', themeData.Blue);
+    root.style.setProperty('--accent-hover', adjustColor(themeData.Blue, isDark ? 30 : -30));
+    
+    // Danger, Success, Warning usually come from theme Red, Green, Yellow
+    root.style.setProperty('--danger-color', themeData.Red);
+    root.style.setProperty('--success-color', themeData.Green);
+    root.style.setProperty('--warning-color', themeData.Yellow);
+
+    // Apply to Xterm.js for Shell Mode
+    if (term) {
+        term.setOption('theme', {
+            background: themeData.Background,
+            foreground: themeData.Foreground,
+            cursor: themeData.Cursor,
+            selectionBackground: themeData.Cursor + '40', // Add transparency
+            black: themeData.Black, red: themeData.Red, green: themeData.Green, yellow: themeData.Yellow,
+            blue: themeData.Blue, magenta: themeData.Magenta, cyan: themeData.Cyan, white: themeData.White,
+            brightBlack: themeData.BrightBlack, brightRed: themeData.BrightRed, brightGreen: themeData.BrightGreen, brightYellow: themeData.BrightYellow,
+            brightBlue: themeData.BrightBlue, brightMagenta: themeData.BrightMagenta, brightCyan: themeData.BrightCyan, brightWhite: themeData.BrightWhite
+        });
+    }
+}
+
+function handleThemePresetChange() {
+    const sel = document.getElementById('theme-preset-select');
+    const customArea = document.getElementById('custom-theme-area');
+    const name = sel.value;
+    
+    if (name === "Custom") {
+        customArea.style.display = 'flex';
+        handleCustomThemeChange(); 
+    } else {
+        customArea.style.display = 'none';
+        applyTheme(themePresets[name]);
+        saveConfigSilently();
+    }
+}
+
+function handleCustomThemeChange() {
+    applyTheme({
+        Name: "Custom",
+        Background: document.getElementById('theme-bg').value,
+        Foreground: document.getElementById('theme-fg').value,
+        Cursor: document.getElementById('theme-cursor').value,
+        ...themePresets["Default"] // Inherit other ANSI colors for terminal
+    });
+    saveConfigSilently();
+}
+
+// ================= SCRIPT LOGIC =================
+
+function listScripts() {
+    fetch('/listscripts', { method: 'POST' }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            const select = document.getElementById('script-select');
+            select.innerHTML = '<option value="">-- Select Script --</option>';
+            data.scripts.forEach(s => {
+                const opt = document.createElement('option');
+                opt.value = s; opt.textContent = s;
+                select.appendChild(opt);
+            });
+        }
+    });
+}
+
+function runScript() {
+    const filename = document.getElementById('script-select').value;
+    if (!filename) return alert("Please select a script first.");
+    
+    isScriptRunning = true;
+    document.getElementById('script-status-text').textContent = 'Running...';
+    document.getElementById('script-status-text').style.color = 'var(--success-color)';
+    document.getElementById('script-console').innerHTML = ''; // Clear console
+    
+    const formData = new FormData();
+    formData.append('filename', filename);
+    fetch('/runscript', { method: 'POST', body: formData }).then(r => r.json()).then(data => {
+        if (data.status !== 'ok') {
+            appendToScriptConsole("❌ Failed to start: " + data.message);
+            isScriptRunning = false;
+            document.getElementById('script-status-text').textContent = 'Error';
+            document.getElementById('script-status-text').style.color = 'var(--danger-color)';
+        } else {
+            appendToScriptConsole(`🚀 Executing: ${filename}`);
+        }
+    });
+}
+
+function stopScript() {
+    fetch('/stopscript', { method: 'POST' }).then(r => r.json()).then(data => {
+        if (data.status === 'ok') {
+            isScriptRunning = false;
+            document.getElementById('script-status-text').textContent = 'Stopped';
+            document.getElementById('script-status-text').style.color = 'var(--warning-color)';
+        }
+    });
+}
+
+function appendToScriptConsole(msg) {
+    const con = document.getElementById('script-console');
+    const div = document.createElement('div');
+    div.textContent = msg;
+    con.appendChild(div);
+    con.scrollTop = con.scrollHeight;
+    
+    // Auto-detect finish
+    if (msg.includes("finished") || msg.includes("stopped") || msg.includes("Error")) {
+        isScriptRunning = false;
+        document.getElementById('script-status-text').textContent = 'Idle';
+        document.getElementById('script-status-text').style.color = 'var(--text-secondary)';
+    }
+}
+
+// ================= CORE LOGIC =================
+
 function toggleConnection() { isConnected ? disconnect() : connect(); }
 
 function connect() {
@@ -202,7 +391,6 @@ function setTimestamp(enabled) { timestampEnabled = enabled; updateTimestampStat
 
 function setShellEnabled(enabled, shouldSave = true) {
     if (shellEnabled === enabled && !(enabled && !term)) return;
-    
     userActionLock = true;
     shellEnabled = enabled;
     updateShellStatus(enabled);
@@ -210,82 +398,70 @@ function setShellEnabled(enabled, shouldSave = true) {
     
     if (enabled) {
         if (!xtermLoaded) {
-            syncShellUI(false);
-            addToOutput('[System] Shell mode requires xterm.js.');
-            shellEnabled = false;
-            updateShellStatus(false);
-            userActionLock = false;
-            return;
+            syncShellUI(false); addToOutput('[System] Shell mode requires xterm.js.');
+            shellEnabled = false; updateShellStatus(false); userActionLock = false; return;
         }
-        
         if (!term) {
             try { initTerminal(); } catch (e) {
-                syncShellUI(false);
-                shellEnabled = false;
-                updateShellStatus(false);
-                addToOutput('[System] Failed to initialize terminal: ' + e.message);
-                userActionLock = false;
-                return;
+                syncShellUI(false); shellEnabled = false; updateShellStatus(false);
+                addToOutput('[System] Failed to initialize terminal: ' + e.message); userActionLock = false; return;
             }
-        } else { 
-            setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50);
-        }
+        } else { setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); }
         
         if (outputMessages.length > 0) {
             const plainText = outputMessages.map(msg => {
-                const div = document.createElement('div');
-                div.innerHTML = msg;
+                const div = document.createElement('div'); div.innerHTML = msg;
                 return div.textContent || div.innerText || '';
             }).join('\r\n');
-            
             if (plainText.trim()) {
                 term.write('\r\n\x1b[33m--- Previous output transferred ---\x1b[0m\r\n');
                 term.write(plainText);
                 term.write('\r\n\x1b[33m--- End of transferred output ---\x1b[0m\r\n');
             }
-            outputMessages = [];
-            pendingMessages = [];
-            document.getElementById('output').innerHTML = '';
+            outputMessages = []; pendingMessages = []; document.getElementById('output').innerHTML = '';
         }
-        
     } else {
         if (term) {
-            const buffer = term.buffer.active;
-            let shellOutput = '';
+            const buffer = term.buffer.active; let shellOutput = '';
             for (let i = 0; i < buffer.length; i++) {
                 const line = buffer.getLine(i);
                 if (line) shellOutput += line.translateToString(true) + "\n";
             }
             shellOutput = shellOutput.trimEnd().replace(/\x1b\[[0-9;]*m/g, '');
-            
             if (shellOutput) {
                 addToOutput('<span style="color: #cca700;">--- Shell output transferred ---</span>');
                 shellOutput.split('\n').forEach(line => { if (line) addToOutput(line); });
                 addToOutput('<span style="color: #cca700;">--- End of transferred output ---</span>');
             }
-            term.dispose();
-            term = null;
-            fitAddon = null;
+            term.dispose(); term = null; fitAddon = null;
         }
     }
-    
     if (shouldSave) saveConfigSilently();
     setTimeout(() => { userActionLock = false; }, 3000);
 }
 
 function initTerminal() {
+    const currentThemeName = document.getElementById('theme-preset-select').value;
+    const currentTheme = currentThemeName === "Custom" ? 
+        { Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] } : 
+        themePresets[currentThemeName];
+
     term = new Terminal({ 
         cursorBlink: true, 
-        theme: { background: '#1e1e1e', foreground: '#cccccc', cursor: '#ffffff' }, 
+        theme: { 
+            background: currentTheme.Background, foreground: currentTheme.Foreground, cursor: currentTheme.Cursor,
+            black: currentTheme.Black, red: currentTheme.Red, green: currentTheme.Green, yellow: currentTheme.Yellow,
+            blue: currentTheme.Blue, magenta: currentTheme.Magenta, cyan: currentTheme.Cyan, white: currentTheme.White,
+            brightBlack: currentTheme.BrightBlack, brightRed: currentTheme.BrightRed, brightGreen: currentTheme.BrightGreen, brightYellow: currentTheme.BrightYellow,
+            brightBlue: currentTheme.BrightBlue, brightMagenta: currentTheme.BrightMagenta, brightCyan: currentTheme.BrightCyan, brightWhite: currentTheme.BrightWhite
+        },
         fontSize: parseInt(document.getElementById('fontsize-input').value) || 14, 
         fontFamily: document.getElementById('font-input').value || 'Consolas, monospace', 
-        scrollback: 10000,
-        convertEol: false // 关闭内置的，由上面 ws.onmessage 里手动替换，更彻底
+        scrollback: 10000, convertEol: false 
     });
     
     fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
-    
     term.open(termContainer);
     
     term.onSelectionChange(() => {
@@ -312,18 +488,15 @@ function initTerminal() {
     }, 200);
 }
 
-// ================= 高性能高亮逻辑 =================
+// ================= HIGHLIGHT LOGIC =================
 
 function hexToAnsi(hex) {
     const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
     if (!result) return '';
-    const r = parseInt(result[1], 16);
-    const g = parseInt(result[2], 16);
-    const b = parseInt(result[3], 16);
-    return `\x1b[1;38;2;${r};${g};${b}m`; // 加粗且着色
+    const r = parseInt(result[1], 16); const g = parseInt(result[2], 16); const b = parseInt(result[3], 16);
+    return `\x1b[1;38;2;${r};${g};${b}m`;
 }
 
-// 优化：将 N 个正则合并为 1 个大正则，只需遍历文本 1 次
 function updateHighlightRules(lines) {
     let rules = lines.map(line => {
         const parts = line.split(':');
@@ -334,40 +507,27 @@ function updateHighlightRules(lines) {
     try {
         const regexParts = rules.map(r => `(${r.regexStr})`);
         highlightColorMap = rules.map(r => r.color);
-        
-        if (regexParts.length > 0) {
-            combinedHighlightRegex = new RegExp(regexParts.join('|'), 'gi');
-        } else {
-            combinedHighlightRegex = null;
-        }
-    } catch (e) {
-        console.error("Failed to combine highlight regex:", e);
-        combinedHighlightRegex = null;
-    }
+        if (regexParts.length > 0) { combinedHighlightRegex = new RegExp(regexParts.join('|'), 'gi'); }
+        else { combinedHighlightRegex = null; }
+    } catch (e) { combinedHighlightRegex = null; }
 }
 
-// Shell 模式高亮：单次替换
 function applyShellHighlight(text) {
     if (!combinedHighlightRegex) return text;
     return text.replace(combinedHighlightRegex, function(match, ...groups) {
         for (let i = 0; i < highlightColorMap.length; i++) {
-            if (groups[i] !== undefined) {
-                return hexToAnsi(highlightColorMap[i]) + match + '\x1b[0m';
-            }
+            if (groups[i] !== undefined) { return hexToAnsi(highlightColorMap[i]) + match + '\x1b[0m'; }
         }
         return match;
     });
 }
 
-// 普通模式高亮：单次替换
 function applyHighlight(text) {
     let result = text.replace(/[&<>"]/g, tag => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[tag] || tag);
     if (combinedHighlightRegex) {
         result = result.replace(combinedHighlightRegex, function(match, ...groups) {
             for (let i = 0; i < highlightColorMap.length; i++) {
-                if (groups[i] !== undefined) {
-                    return `<span style="color:${highlightColorMap[i]};font-weight:bold;">${match}</span>`;
-                }
+                if (groups[i] !== undefined) { return `<span style="color:${highlightColorMap[i]};font-weight:bold;">${match}</span>`; }
             }
             return match;
         });
@@ -375,7 +535,7 @@ function applyHighlight(text) {
     return result;
 }
 
-// ==================================================
+// ================= UTILITY =================
 
 function addToHistory(command) {
     if (!command || command.trim() === '' || shellEnabled) return;
@@ -394,11 +554,9 @@ function navigateHistory(direction) {
 
 function sendData() {
     if (shellEnabled) return;
-    const input = document.getElementById('input');
-    const data = input.value;
+    const input = document.getElementById('input'); const data = input.value;
     if (data === '') return;
-    const formData = new FormData();
-    formData.append('data', data);
+    const formData = new FormData(); formData.append('data', data);
     fetch('/send', { method: 'POST', body: formData }).then(r => r.json()).then(res => {
         if (res.status === 'ok') { addToHistory(data); input.value = ''; historyIndex = historyList.length; }
         else { alert('Send failed: ' + res.message); }
@@ -416,45 +574,29 @@ function exportLog() {
     let content = "";
     if (shellEnabled && term) {
         const buffer = term.buffer.active;
-        for (let i = 0; i < buffer.length; i++) {
-            const line = buffer.getLine(i);
-            if (line) content += line.translateToString(true) + "\n";
-        }
+        for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) content += line.translateToString(true) + "\n"; }
         content = content.trimEnd();
-    } else {
-        content = document.getElementById('output').innerText;
-    }
+    } else { content = document.getElementById('output').innerText; }
     if (!content.trim()) return alert("No data to export.");
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+    const blob = new Blob([content], { type: 'text/plain' }); const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
     a.click(); URL.revokeObjectURL(url);
 }
 
-function addToOutput(text) {
-    outputMessages.push(text);
-    pendingMessages.push(text);
-    scheduleOutputUpdate();
-}
-
+function addToOutput(text) { outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); }
 function scheduleOutputUpdate() { if (!updateTimer) updateTimer = setTimeout(flushOutput, 16); }
 
 function flushOutput() {
-    updateTimer = null;
-    if (pendingMessages.length === 0) return;
-    const output = document.getElementById('output');
-    const fragment = document.createDocumentFragment();
+    updateTimer = null; if (pendingMessages.length === 0) return;
+    const output = document.getElementById('output'); const fragment = document.createDocumentFragment();
     const batch = pendingMessages.splice(0, 50);
     batch.forEach(msg => { const div = document.createElement('div'); div.innerHTML = applyHighlight(msg); fragment.appendChild(div); });
-    output.appendChild(fragment);
-    output.scrollTop = output.scrollHeight;
+    output.appendChild(fragment); output.scrollTop = output.scrollHeight;
     if (pendingMessages.length > 0) scheduleOutputUpdate();
 }
 
 function rerenderAllOutput() {
-    const output = document.getElementById('output');
-    output.innerHTML = '';
+    const output = document.getElementById('output'); output.innerHTML = '';
     outputMessages.forEach(msg => { const div = document.createElement('div'); div.innerHTML = applyHighlight(msg); output.appendChild(div); });
 }
 
@@ -464,13 +606,7 @@ function clearOutput(sendClear = true) {
     else { document.getElementById('output').innerHTML = ''; pendingMessages = []; outputMessages = []; }
 }
 
-function updateConnectionStatus(connected) {
-    isConnected = connected;
-    const status = document.getElementById('connection-status');
-    status.textContent = connected ? 'Connected' : 'Disconnected';
-    status.className = connected ? 'connected' : '';
-}
-
+function updateConnectionStatus(connected) { isConnected = connected; const status = document.getElementById('connection-status'); status.textContent = connected ? 'Connected' : 'Disconnected'; status.className = connected ? 'connected' : ''; }
 function updateMode(mode) { currentMode = mode; document.getElementById('ascii-mode').checked = (mode === 'ascii'); document.getElementById('hex-mode').checked = (mode === 'hex'); }
 function updateTimestampStatus(enabled) { timestampEnabled = enabled; document.getElementById('timestamp-on').checked = enabled; document.getElementById('timestamp-off').checked = !enabled; }
 function updateShellStatus(enabled) { shellEnabled = enabled; document.getElementById('shell-on').checked = enabled; document.getElementById('shell-off').checked = !enabled; }
@@ -487,9 +623,7 @@ function loadConfig() {
         updateConfig(data.config, true);
         updateConnectionStatus(data.connected);
         updateMode(data.mode);
-        if (data.config && data.config.UI) {
-            setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false);
-        }
+        if (data.config && data.config.UI) { setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false); }
     });
 }
 
@@ -515,6 +649,20 @@ function updateConfig(config, isInitial = false) {
         document.getElementById('highlight-input').value = groups.join('\n');
         updateHighlightRules(groups);
     }
+    if (config.Theme) {
+        const name = config.Theme.Name || "Default";
+        document.getElementById('theme-preset-select').value = name;
+        if (name === "Custom") {
+            document.getElementById('custom-theme-area').style.display = 'flex';
+            document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e';
+            document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc';
+            document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff';
+            applyTheme(config.Theme);
+        } else {
+            document.getElementById('custom-theme-area').style.display = 'none';
+            applyTheme(themePresets[name]);
+        }
+    }
 }
 
 function saveConfig() {
@@ -529,11 +677,25 @@ function saveConfigSilently() {
 }
 
 function getFormData() {
+    const themeName = document.getElementById('theme-preset-select').value;
+    let themeData = { Name: themeName };
+    
+    if (themeName === "Custom") {
+        themeData.Background = document.getElementById('theme-bg').value;
+        themeData.Foreground = document.getElementById('theme-fg').value;
+        themeData.Cursor = document.getElementById('theme-cursor').value;
+        Object.assign(themeData, themePresets["Default"]); // Merge base colors for TOML completeness
+    } else {
+        const preset = themePresets[themeName];
+        if(preset) Object.assign(themeData, preset);
+    }
+
     return {
         Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value },
         UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled },
         Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) },
-        Log: { Path: './logs' }
+        Log: { Path: './logs' },
+        Theme: themeData
     };
 }
 
@@ -548,8 +710,7 @@ function showPortSelection(ports) {
         btn.onclick = () => { 
             document.getElementById('port-input').value = port; 
             updatePortInfo(port, document.getElementById('baud-input').value); 
-            saveConfigSilently();
-            closeModal(); 
+            saveConfigSilently(); closeModal(); 
         };
         list.appendChild(btn);
     });
@@ -557,4 +718,3 @@ function showPortSelection(ports) {
 
 function showPortSelectionError(msg) { document.getElementById('modal-body').innerHTML = `<p style="color:red;">Error: ${msg}</p>`; }
 function closeModal() { document.getElementById('modal').style.display = 'none'; }
-

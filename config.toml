@@ -1,5 +1,5 @@
 [serial]
-  port = "COM50"
+  port = "COM9"
   baud = 115200
   databits = 8
   stopbits = 1
@@ -16,3 +16,25 @@
 
 [highlight]
   groups = ["audio:#bfd200", "gain:#f16000"]
+
+[theme]
+  name = "Monokai"
+  background = "#272822"
+  foreground = "#f8f8f2"
+  cursor = "#f8f8f0"
+  black = "#272822"
+  red = "#f92672"
+  green = "#a6e22e"
+  yellow = "#f4bf75"
+  blue = "#66d9ef"
+  magenta = "#ae81ff"
+  cyan = "#a1efe4"
+  white = "#f8f8f2"
+  brightblack = "#75715e"
+  brightred = "#fd971f"
+  brightgreen = "#a6e22e"
+  brightyellow = "#e6db74"
+  brightblue = "#66d9ef"
+  brightmagenta = "#ae81ff"
+  brightcyan = "#a1efe4"
+  brightwhite = "#f9f8f5"

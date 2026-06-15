@@ -1,4 +1,4 @@
-/* 极简深色主题 */
+/* Root Variables for Theming */
 :root {
     --bg-primary: #1e1e1e;
     --bg-secondary: #252526;
@@ -25,144 +25,107 @@ body {
     overflow: hidden;
 }
 
-/* 顶部工具栏 */
+/* Modern Scrollbar Styling */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--bg-secondary); border-radius: 4px; }
+::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-color); }
+
+/* Xterm specific scrollbar override */
+.xterm-viewport::-webkit-scrollbar { width: 8px; }
+.xterm-viewport::-webkit-scrollbar-track { background: var(--bg-primary); }
+.xterm-viewport::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 4px; }
+.xterm-viewport::-webkit-scrollbar-thumb:hover { background: var(--accent-color); }
+
+/* Top Toolbar */
 .toolbar {
-    height: 40px;
-    background-color: var(--bg-secondary);
-    border-bottom: 1px solid var(--border-color);
-    display: flex;
-    align-items: center;
-    padding: 0 10px;
-    gap: 10px;
-    flex-shrink: 0;
+    height: 40px; background-color: var(--bg-secondary); border-bottom: 1px solid var(--border-color);
+    display: flex; align-items: center; padding: 0 10px; gap: 10px; flex-shrink: 0;
 }
-
 .title { font-weight: bold; font-size: 14px; }
-
 .status-bar { display: flex; gap: 15px; margin-left: 15px; font-size: 12px; }
-
 #connection-status { color: var(--danger-color); font-weight: bold; }
 #connection-status.connected { color: var(--success-color); }
 #port-info { color: var(--text-secondary); }
-
 .actions { margin-left: auto; display: flex; gap: 5px; }
 
 .icon-btn, .tool-btn, .action-btn {
-    background-color: var(--bg-tertiary);
-    color: var(--text-primary);
-    border: 1px solid var(--border-color);
-    padding: 4px 10px;
-    border-radius: 3px;
-    cursor: pointer;
-    font-size: 12px;
+    background-color: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color);
+    padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 12px;
 }
-
-.icon-btn:hover, .tool-btn:hover, .action-btn:hover {
-    background-color: var(--accent-color);
-    border-color: var(--accent-hover);
-}
-
-.action-btn { background-color: var(--accent-color); border: none; }
+.icon-btn:hover, .tool-btn:hover { background-color: var(--accent-color); border-color: var(--accent-hover); color: white; }
+.action-btn { background-color: var(--accent-color); border: none; color: white; }
 .action-btn:hover { background-color: var(--accent-hover); }
 
-/* 主体布局 */
+/* Main Layout - Flex Horizontal */
 .main-container { flex: 1; display: flex; overflow: hidden; }
 
-/* 侧边栏 */
+/* Left Sidebar */
 .sidebar {
-    width: 280px;
-    background-color: var(--bg-secondary);
-    border-right: 1px solid var(--border-color);
-    overflow-y: auto;
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 15px;
-    flex-shrink: 0; /* 防止侧边栏被压缩 */
+    width: 280px; background-color: var(--bg-secondary); border-right: 1px solid var(--border-color);
+    overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 15px; flex-shrink: 0;
     transition: width 0.2s ease, padding 0.2s ease, opacity 0.2s ease;
 }
-
 .sidebar.collapsed { width: 0; padding: 0; opacity: 0; border: none; overflow: hidden; }
 
 .config-section { display: flex; flex-direction: column; gap: 8px; }
 .config-section h3 { font-size: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 1px; border-bottom: 1px solid var(--border-color); padding-bottom: 4px; }
-
 label { font-size: 12px; display: flex; justify-content: space-between; align-items: center; }
-
 input[type="text"], input[type="number"], select, textarea {
-    background-color: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    color: var(--text-primary);
-    padding: 4px;
-    border-radius: 2px;
-    width: 60%;
-    font-size: 12px;
+    background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary);
+    padding: 4px; border-radius: 2px; width: 60%; font-size: 12px;
 }
-
 textarea { width: 100%; resize: vertical; font-family: monospace; }
 .toggle-group { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .toggle-group input[type="radio"] { accent-color: var(--accent-color); }
 
-/* 终端区域 */
-.terminal-wrapper { flex: 1; display: flex; flex-direction: column; background-color: var(--bg-primary); position: relative; }
-
-.output-container {
-    flex: 1;
-    padding: 8px;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-}
-
-/* 【关键修复】xterm 容器必须占满且正确 flex 布局 */
-.terminal-container {
-    flex: 1;
-    padding: 0; /* xterm 不需要 padding，它自己管理 */
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-}
-
+/* Middle Terminal Area */
+.terminal-wrapper { flex: 1; display: flex; flex-direction: column; background-color: var(--bg-primary); position: relative; min-width: 200px; /* Prevent over-squeezing */ }
+.output-container { flex: 1; padding: 8px; overflow: hidden; display: flex; flex-direction: column; }
+.terminal-container { flex: 1; padding: 0; overflow: hidden; display: flex; flex-direction: column; }
 .output {
-    height: 100%;
-    overflow-y: auto;
-    font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
-    font-size: 14px;
-    white-space: pre-wrap;
-    word-wrap: break-word;
-    outline: none;
-    background-color: var(--bg-primary);
-    color: var(--text-primary);
+    height: 100%; overflow-y: auto; font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    font-size: 14px; white-space: pre-wrap; word-wrap: break-word; outline: none;
+    background-color: var(--bg-primary); color: var(--text-primary);
 }
+.output span[style*="color"] { font-weight: bold; }
 
-/* 底部输入区 */
-.input-area {
-    background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border-color);
-    display: flex;
-    flex-direction: column;
-    transition: height 0.2s ease;
-    overflow: hidden;
-    height: 60px;
-}
-
+/* Input Area */
+.input-area { background-color: var(--bg-secondary); border-top: 1px solid var(--border-color); display: flex; flex-direction: column; transition: height 0.2s ease; overflow: hidden; height: 60px; }
 .input-area.collapsed { height: 30px; }
 .toggle-input-btn { background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 12px; padding: 4px 10px; text-align: left; }
 .toggle-input-btn:hover { color: var(--text-primary); }
-
 .input-row { display: flex; padding: 5px 10px 10px 10px; gap: 10px; flex: 1; }
+#input { flex: 1; background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px; font-family: monospace; font-size: 14px; }
 
-#input {
-    flex: 1;
-    background-color: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    color: var(--text-primary);
-    padding: 6px;
-    font-family: monospace;
-    font-size: 14px;
+/* Right Script Panel */
+.script-panel {
+    width: 350px; background-color: var(--bg-secondary); border-left: 1px solid var(--border-color);
+    display: flex; flex-direction: column; flex-shrink: 0;
+    transition: width 0.2s ease, border-width 0.2s ease; 
+    overflow: hidden;
+}
+.script-panel.collapsed { 
+    width: 0; 
+    border-left-width: 0; /* Hide border when collapsed */
+    overflow: hidden;
+}
+.script-header {
+    height: 35px; display: flex; justify-content: center; align-items: center;
+    padding: 0 10px; border-bottom: 1px solid var(--border-color); font-weight: bold; font-size: 13px;
+    flex-shrink: 0;
+}
+.script-content { flex: 1; display: flex; flex-direction: column; padding: 10px; gap: 10px; overflow: hidden; }
+.script-controls { display: flex; gap: 5px; }
+.script-status { font-size: 11px; color: var(--text-secondary); }
+.script-console-label { font-size: 11px; color: var(--text-secondary); margin-top: 5px; text-transform: uppercase; }
+.script-console {
+    flex: 1; background-color: var(--bg-primary); border: 1px solid var(--border-color);
+    padding: 5px; font-family: monospace; font-size: 12px; overflow-y: auto; white-space: pre-wrap;
+    border-radius: 3px;
 }
 
-/* 模态框 */
+/* Modal */
 .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); }
 .modal-content { background-color: var(--bg-secondary); margin: 10% auto; padding: 20px; border: 1px solid var(--border-color); width: 400px; border-radius: 4px; }
 .close { color: var(--text-secondary); float: right; font-size: 20px; cursor: pointer; }
@@ -171,6 +134,3 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     .sidebar { position: absolute; z-index: 10; height: calc(100vh - 40px); box-shadow: 2px 0 5px rgba(0,0,0,0.5); }
     .sidebar.collapsed { transform: translateX(-100%); width: 280px; }
 }
-
-.output span[style*="color"] { font-weight: bold; }
-
