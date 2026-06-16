@@ -2,24 +2,16 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SerialZero</title>
-    <!-- 1. Custom Styles -->
-    <link rel="stylesheet" href="static/style.css">
-    
-    <!-- 2. Xterm.js Core Styles (CRITICAL) -->
-    <link rel="stylesheet" href="static/lib/xterm.css">
-    
-    <!-- 3. Xterm.js Core Logic (CRITICAL) -->
-    <script src="static/lib/xterm.js"></script>
-    
-    <!-- 4. Xterm.js Fit Addon (CRITICAL) -->
-    <script src="static/lib/xterm-addon-fit.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/lib/xterm.css">
 </head>
 <body>
     <!-- Top Toolbar -->
     <div class="toolbar">
-        <button id="toggle-sidebar-btn" class="icon-btn" title="Toggle Sidebar">☰</button>
-        <span class="title">SerialZero</span>
+        <button id="toggle-sidebar-btn" class="icon-btn">☰</button>
+        <div class="title">SerialZero</div>
         <div class="status-bar">
             <span id="connection-status">Disconnected</span>
             <span id="port-info">COM1 | 9600</span>
@@ -29,15 +21,15 @@
             <button id="scan-btn" class="tool-btn">Scan</button>
             <button id="clear-btn" class="tool-btn">Clear</button>
             <button id="export-btn" class="tool-btn">Export</button>
-            <!-- Moved Script Toggle Button Here -->
-            <button id="toggle-script-btn" class="icon-btn" title="Toggle Script Panel">🤖</button>
+            <button id="toggle-script-btn" class="icon-btn">🤖</button>
         </div>
     </div>
 
-    <!-- Main Container -->
+    <!-- Main Layout -->
     <div class="main-container">
         <!-- Left Sidebar -->
         <div id="sidebar" class="sidebar">
+            <!-- Serial Port -->
             <div class="config-section">
                 <h3>Serial Port</h3>
                 <label>Port: <input type="text" id="port-input" value="COM1"></label>
@@ -65,41 +57,42 @@
                 </label>
             </div>
 
+            <!-- Display -->
             <div class="config-section">
                 <h3>Display</h3>
                 <label>Font: <input type="text" id="font-input" value="Consolas, monospace"></label>
                 <label>Font Size: <input type="number" id="fontsize-input" value="14"></label>
-                <label>Mode:
-                    <div class="toggle-group">
-                        <input type="radio" id="ascii-mode" name="mode" value="ascii" checked> ASCII
-                        <input type="radio" id="hex-mode" name="mode" value="hex"> HEX
-                    </div>
-                </label>
-                <label>Timestamp:
-                    <div class="toggle-group">
-                        <input type="radio" id="timestamp-on" name="timestamp" value="on" checked> ON
-                        <input type="radio" id="timestamp-off" name="timestamp" value="off"> OFF
-                    </div>
-                </label>
-                <label>SHELL:
-                    <div class="toggle-group">
-                        <input type="radio" id="shell-on" name="shell" value="on" checked> ON
-                        <input type="radio" id="shell-off" name="shell" value="off"> OFF
-                    </div>
-                </label>
+                <div class="toggle-group">
+                    Mode:
+                    <input type="radio" id="ascii-mode" name="mode" value="ascii" checked> ASCII
+                    <input type="radio" id="hex-mode" name="mode" value="hex"> HEX
+                </div>
+                <div class="toggle-group">
+                    Timestamp:
+                    <input type="radio" id="timestamp-on" name="timestamp" value="on" checked> ON
+                    <input type="radio" id="timestamp-off" name="timestamp" value="off"> OFF
+                </div>
+                <div class="toggle-group">
+                    SHELL:
+                    <input type="radio" id="shell-on" name="shell" value="on" checked> ON
+                    <input type="radio" id="shell-off" name="shell" value="off"> OFF
+                </div>
             </div>
 
+            <!-- Highlight -->
             <div class="config-section">
                 <h3>Highlight (regex:color)</h3>
-                <textarea id="highlight-input" rows="4" spellcheck="false"></textarea>
+                <textarea id="highlight-input" rows="4" spellcheck="false">error:#ff0000
+warn:#ffa500
+ok:#00ff00</textarea>
             </div>
 
-            <!-- Theme Configuration -->
+            <!-- Theme -->
             <div class="config-section">
                 <h3>Theme</h3>
                 <label>Preset:
                     <select id="theme-preset-select">
-                        <option value="Default">Default</option>
+                        <option value="Default" selected>Default</option>
                         <option value="Dracula">Dracula</option>
                         <option value="Monokai">Monokai</option>
                         <option value="Solarized">Solarized Dark</option>
@@ -108,54 +101,53 @@
                         <option value="Custom">Custom</option>
                     </select>
                 </label>
-                <div id="custom-theme-area" style="display: none; flex-direction: column; gap: 5px; margin-top: 5px;">
+                <div id="custom-theme-area" style="display: none; flex-direction: column; gap: 8px;">
                     <label>Background: <input type="color" id="theme-bg" value="#1e1e1e"></label>
                     <label>Foreground: <input type="color" id="theme-fg" value="#cccccc"></label>
                     <label>Cursor: <input type="color" id="theme-cursor" value="#ffffff"></label>
                 </div>
+                <button id="save-config-btn" class="action-btn" style="margin-top: 10px; width: 100%;">Save Config</button>
             </div>
-
-            <button id="save-config-btn" class="action-btn" style="margin-top: auto;">Save Config</button>
         </div>
 
         <!-- Middle Terminal Area -->
         <div class="terminal-wrapper">
+            <!-- Normal Mode -->
             <div id="output-container" class="output-container">
-                <div id="output" class="output" tabindex="0"></div>
+                <div id="output" class="output"></div>
             </div>
-            <div id="terminal-container" class="terminal-container"></div>
+            
+            <!-- Shell Mode -->
+            <div id="shell-area" class="shell-area">
+                <div id="time-gutter" class="time-gutter"></div>
+                <div id="terminal-container" class="terminal-container"></div>
+            </div>
+
+            <!-- Input Area -->
             <div id="input-area" class="input-area">
                 <button id="toggle-input-btn" class="toggle-input-btn">▼ Send</button>
                 <div class="input-row">
-                    <input type="text" id="input" placeholder="Type here...">
+                    <input type="text" id="input" placeholder="Type here and press Enter..." autocomplete="off">
                     <button id="send-btn" class="action-btn">Send</button>
                 </div>
             </div>
         </div>
 
-        <!-- Right Script Panel -->
-        <div id="script-panel" class="script-panel collapsed"> <!-- Default collapsed -->
+        <!-- Right Script Panel (Added "collapsed" class to hide by default) -->
+        <div id="script-panel" class="script-panel collapsed">
             <div class="script-header">
-                <span class="script-title">🤖 Automation Script</span>
+                🤖 Automation Script
             </div>
-            
             <div class="script-content">
+                <select id="script-select" style="width: 100%; padding: 5px;">
+                    <option value="">-- Select Script --</option>
+                </select>
                 <div class="script-controls">
-                    <select id="script-select" style="flex: 1;">
-                        <option value="">-- Select Script --</option>
-                    </select>
-                    <button id="refresh-scripts-btn" class="icon-btn" title="Refresh List">🔄</button>
+                    <button id="refresh-scripts-btn" class="tool-btn" style="flex:1;">🔄</button>
+                    <button id="run-script-btn" class="action-btn" style="flex:2;">▶ Run</button>
+                    <button id="stop-script-btn" class="tool-btn" style="flex:2; background-color: var(--danger-color); color: white;">⏹ Stop</button>
                 </div>
-                
-                <div style="display: flex; gap: 5px; margin-top: 5px;">
-                    <button id="run-script-btn" class="action-btn" style="flex:1; background-color: var(--success-color);">▶ Run</button>
-                    <button id="stop-script-btn" class="action-btn" style="flex:1; background-color: var(--danger-color);">⏹ Stop</button>
-                </div>
-
-                <div class="script-status">
-                    Status: <span id="script-status-text" style="color: var(--text-secondary);">Idle</span>
-                </div>
-
+                <div class="script-status">Status: <span id="script-status-text" style="color: var(--success-color);">Idle</span></div>
                 <div class="script-console-label">Console Output:</div>
                 <div id="script-console" class="script-console"></div>
             </div>
@@ -170,7 +162,9 @@
         </div>
     </div>
 
-    <!-- 5. Custom Logic must be last -->
-    <script src="static/app.js"></script>
+    <script src="/static/lib/xterm.js"></script>
+    <script src="/static/lib/xterm-addon-fit.js"></script>
+    <script src="/static/app.js"></script>
 </body>
 </html>
+
