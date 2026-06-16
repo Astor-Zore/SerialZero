@@ -622,8 +622,22 @@ function applyFontSettings(font, size) {
 
 function loadConfig() {
     fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => {
-        updateConfig(data.config, true); updateConnectionStatus(data.connected); updateMode(data.mode);
-        if (data.config && data.config.UI) setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false);
+        updateConfig(data.config, true); 
+        updateConnectionStatus(data.connected); 
+        updateMode(data.mode);
+        if (data.config && data.config.UI) {
+            setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false);
+        } else {
+            setShellEnabled(true, false);
+        }
+        
+        // Notify Go backend: UI is fully initialized, ready to show window
+        fetch('/ready', { method: 'POST' });
+        
+    }).catch(err => {
+        console.error('Config load failed:', err);
+        // Notify backend even on error to prevent the app from looking frozen
+        fetch('/ready', { method: 'POST' });
     });
 }
 
