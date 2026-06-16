@@ -3,11 +3,9 @@
 function main()
     log("🚀 Script started! Waiting for data...")
 
-    -- 发送 AT 指令
-    send("AT\r\n")
+    send("audio_control set_pa_mute both 1\r\n")
 
-    -- 等待 OK，超时时间 3000 毫秒
-    local success = wait("OK", 3000)
+    local success = wait("successfully", 3000)
 
 
     if success then
@@ -16,7 +14,6 @@ function main()
         log("🔄 Sending AT+GMR...")
         send("AT+GMR\r\n")
 
-        -- 等待任意包含 OK 或 ERROR 的响应
         local res = wait("AT", 5000)
         if not res then
             log("⚠️ Timeout waiting for GMR response, but continuing.")

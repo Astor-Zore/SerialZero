@@ -1,5 +1,5 @@
 [serial]
-  port = "COM9"
+  port = "COM50"
   baud = 115200
   databits = 8
   stopbits = 1
