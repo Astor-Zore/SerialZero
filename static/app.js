@@ -63,7 +63,7 @@ document.addEventListener('DOMContentLoaded', function() {
 class TimeGutter {
     constructor(element) {
         this.el = element;
-        this.lineTimestamps = {}; 
+        this.lineTimestamps = []; // Strictly 1:1 mapping with Xterm's buffer.length
         this.cellHeight = 0;
         this.term = null;
         this.viewport = null;
@@ -81,22 +81,41 @@ class TimeGutter {
         // 1. Listen for new lines
         term.onLineFeed(() => {
             const buffer = this.term.buffer.active;
-            let lineIndex = buffer.baseY + buffer.cursorY - 1;
+            const lineIndex = buffer.baseY + buffer.cursorY - 1;
             
-            if (lineIndex >= 0) {
-                // FIXED: If the current line is wrapped, backtrack to find the logical start line
-                let startLineIndex = lineIndex;
-                while (startLineIndex > buffer.baseY && buffer.getLine(startLineIndex).isWrapped) {
-                    startLineIndex--;
-                }
-                
+            if (lineIndex < 0) return;
+            
+            // Check if this line is an auto-wrapped continuation of the previous line
+            const isWrapped = buffer.getLine(lineIndex) && buffer.getLine(lineIndex).isWrapped;
+            
+            // Fill any potential gaps to maintain index alignment
+            while (this.lineTimestamps.length < lineIndex) {
+                this.lineTimestamps.push('');
+            }
+            
+            if (!isWrapped) {
                 const now = new Date();
                 const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}.${now.getMilliseconds().toString().padStart(3,'0')}`;
                 
-                // Record timestamp at the logical start line
-                this.lineTimestamps[startLineIndex] = ts;
-                this.scheduleRender();
+                if (lineIndex === this.lineTimestamps.length) {
+                    this.lineTimestamps.push(ts);
+                } else {
+                    this.lineTimestamps[lineIndex] = ts;
+                }
+            } else {
+                // For wrapped lines, if the array needs to grow, push an empty placeholder
+                if (lineIndex === this.lineTimestamps.length) {
+                    this.lineTimestamps.push('');
+                }
             }
+            
+            // Strictly sync array length with buffer length.
+            // If buffer scrolled (dropped oldest lines), we drop them too.
+            while (this.lineTimestamps.length > buffer.length) {
+                this.lineTimestamps.shift();
+            }
+            
+            this.scheduleRender();
         });
 
         // 2. Core Sync: Listen to Xterm's native smooth scroll
@@ -128,7 +147,7 @@ class TimeGutter {
     }
 
     reset() {
-        this.lineTimestamps = {};
+        this.lineTimestamps = [];
         this.el.innerHTML = '';
     }
 
@@ -148,29 +167,29 @@ class TimeGutter {
         const buffer = this.term.buffer.active;
         const bufferLength = buffer.length;
         
-        if (bufferLength < Object.keys(this.lineTimestamps).length - 10) {
-            this.lineTimestamps = {};
+        // Final safety sync before rendering
+        while (this.lineTimestamps.length > bufferLength) {
+            this.lineTimestamps.shift();
+        }
+        while (this.lineTimestamps.length < bufferLength) {
+            this.lineTimestamps.push('');
         }
 
         const scrollTop = this.viewport.scrollTop;
         const viewportHeight = this.viewport.clientHeight;
         
+        // Calculate visible absolute row range
         let startRow = Math.floor(scrollTop / this.cellHeight) - 2;
         let endRow = Math.ceil((scrollTop + viewportHeight) / this.cellHeight) + 2;
 
         startRow = Math.max(0, startRow);
         endRow = Math.min(bufferLength, endRow);
 
-        let offsetY = 0;
-        if (bufferLength < this.term.rows) {
-            offsetY = (this.term.rows - bufferLength) * this.cellHeight;
-        }
-
         let html = '';
         for(let i = startRow; i < endRow; i++) {
             const ts = this.lineTimestamps[i];
             if (ts) {
-                const top = (i * this.cellHeight) - scrollTop + offsetY;
+                const top = (i * this.cellHeight) - scrollTop;
                 html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">${ts}</div>`;
             }
         }
@@ -295,14 +314,23 @@ function setupSmartCopy() {
 }
 
 function addConfigChangeListeners() {
-    ['port-input', 'baud-input', 'databits-select', 'stopbits-select', 'parity-select', 'font-input', 'fontsize-input', 'highlight-input'].forEach(id => {
+    ['port-input', 'baud-input', 'databits-select', 'stopbits-select', 'parity-select', 'font-input', 'fontsize-input', 'highlight-input', 'scrollback-input'].forEach(id => {
         document.getElementById(id).addEventListener('change', saveConfigSilently);
     });
     document.getElementById('port-input').addEventListener('input', function() { updatePortInfo(this.value, document.getElementById('baud-input').value); });
     document.getElementById('port-input').addEventListener('change', function() { updatePortInfo(this.value, document.getElementById('baud-input').value); });
     document.getElementById('baud-input').addEventListener('change', function() { updatePortInfo(document.getElementById('port-input').value, this.value); });
+    
     document.getElementById('font-input').addEventListener('change', function() { applyFontSettings(this.value, document.getElementById('fontsize-input').value); });
     document.getElementById('fontsize-input').addEventListener('change', function() { applyFontSettings(document.getElementById('font-input').value, this.value); });
+    
+    document.getElementById('scrollback-input').addEventListener('change', function() {
+        if (shellEnabled && term) {
+            setShellEnabled(false, false); 
+            setTimeout(() => setShellEnabled(true, false), 100); 
+        }
+    });
+
     document.getElementById('highlight-input').addEventListener('change', function() {
         updateHighlightRules(this.value.split('\n').map(l => l.trim()).filter(l => l));
         rerenderAllOutput();
@@ -485,7 +513,7 @@ function initTerminal() {
         theme: { background: currentTheme.Background, foreground: currentTheme.Foreground, cursor: currentTheme.Cursor, black: currentTheme.Black, red: currentTheme.Red, green: currentTheme.Green, yellow: currentTheme.Yellow, blue: currentTheme.Blue, magenta: currentTheme.Magenta, cyan: currentTheme.Cyan, white: currentTheme.White, brightBlack: currentTheme.BrightBlack, brightRed: currentTheme.BrightRed, brightGreen: currentTheme.BrightGreen, brightYellow: currentTheme.BrightYellow, brightBlue: currentTheme.BrightBlue, brightMagenta: currentTheme.BrightMagenta, brightCyan: currentTheme.BrightCyan, brightWhite: currentTheme.BrightWhite },
         fontSize: parseInt(document.getElementById('fontsize-input').value) || 14,
         fontFamily: document.getElementById('font-input').value || 'Consolas, monospace',
-        scrollback: 10000,
+        scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000,
         convertEol: false
     });
     
@@ -565,12 +593,24 @@ function exportLog() {
         const buffer = term.buffer.active;
         const hasTimestamps = timestampEnabled && timeGutter;
         
+        if (hasTimestamps) {
+            while (timeGutter.lineTimestamps.length > buffer.length) {
+                timeGutter.lineTimestamps.shift();
+            }
+            while (timeGutter.lineTimestamps.length < buffer.length) {
+                timeGutter.lineTimestamps.push('');
+            }
+        }
+        
         for (let i = 0; i < buffer.length; i++) {
             const line = buffer.getLine(i);
             if (line) {
                 let lineText = line.translateToString(true);
-                if (hasTimestamps && timeGutter.lineTimestamps[i]) {
-                    lineText = `[${timeGutter.lineTimestamps[i]}] ${lineText}`;
+                if (hasTimestamps) {
+                    const ts = timeGutter.lineTimestamps[i];
+                    if (ts) {
+                        lineText = `[${ts}] ${lineText}`;
+                    }
                 }
                 content += lineText + "\n";
             }
@@ -631,12 +671,14 @@ function loadConfig() {
             setShellEnabled(true, false);
         }
         
-        // Notify Go backend: UI is fully initialized, ready to show window
-        fetch('/ready', { method: 'POST' });
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+                fetch('/ready', { method: 'POST' });
+            });
+        });
         
     }).catch(err => {
         console.error('Config load failed:', err);
-        // Notify backend even on error to prevent the app from looking frozen
         fetch('/ready', { method: 'POST' });
     });
 }
@@ -654,6 +696,7 @@ function updateConfig(config, isInitial = false) {
     if (config.UI) {
         document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace';
         document.getElementById('fontsize-input').value = config.UI.FontSize || 14;
+        document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000;
         applyFontSettings(config.UI.Font, config.UI.FontSize);
         updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true);
         if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true);
@@ -689,7 +732,7 @@ function getFormData() {
     else { const preset = themePresets[themeName]; if(preset) Object.assign(themeData, preset); }
     return {
         Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value },
-        UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled },
+        UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled, Scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000 },
         Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) },
         Log: { Path: './logs' }, Theme: themeData
     };

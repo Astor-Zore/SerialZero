@@ -3,7 +3,6 @@
 package main
 
 import (
-	"unsafe"
 	"bytes"
 	"context"
 	"embed"
@@ -23,6 +22,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/BurntSushi/toml"
 	"github.com/getlantern/systray"
@@ -44,43 +44,17 @@ var indexHTML string
 //go:embed app.ico
 var iconData []byte
 
-var (
-	moduser32          = syscall.NewLazyDLL("user32.dll")
-	procFindWindowW    = moduser32.NewProc("FindWindowW")
-	procSendMessageW   = moduser32.NewProc("SendMessageW")
-	procLoadIconW      = moduser32.NewProc("LoadIconW")
-	procGetModuleHandleW = modkernel32.NewProc("GetModuleHandleW")
-	procShowWindow     = moduser32.NewProc("ShowWindow") ///< Controls window visibility
-	procGetWindowRect  = moduser32.NewProc("GetWindowRect") ///< Gets window bounding rect
-	procMoveWindow     = moduser32.NewProc("MoveWindow") ///< Moves and resizes window
-	procGetSystemMetrics = moduser32.NewProc("GetSystemMetrics") ///< Gets screen metrics
-)
-
-// Window state constants
-const (
-	SW_HIDE = 0
-	SW_SHOW = 5
-)
-
-// Rect structure for window positioning
-type Rect struct {
-	Left, Top, Right, Bottom int32
-}
-
-// System metrics constants
-const (
-	SM_CXSCREEN = 0
-	SM_CYSCREEN = 1
-)
+// DefaultScrollback defines the default log buffer size.
+const DefaultScrollback = 100000
 
 /**
  * @brief Theme configuration structure for UI customization.
  */
 type Theme struct {
-	Name          string `toml:"name"`          ///< Theme name (e.g., "Dracula", "Custom")
-	Background    string `toml:"background"`    ///< Terminal background color
-	Foreground    string `toml:"foreground"`    ///< Terminal foreground color
-	Cursor        string `toml:"cursor"`        ///< Cursor color
+	Name          string `toml:"name"`
+	Background    string `toml:"background"`
+	Foreground    string `toml:"foreground"`
+	Cursor        string `toml:"cursor"`
 	Black         string `toml:"black"`
 	Red           string `toml:"red"`
 	Green         string `toml:"green"`
@@ -114,15 +88,16 @@ type Config struct {
 		Path string `toml:"path"`
 	} `toml:"log"`
 	UI struct {
-		Font      string `toml:"font"`
-		FontSize  int    `toml:"fontsize"`
-		Timestamp bool   `toml:"timestamp"`
-		Shell     bool   `toml:"shell"`
+		Font       string `toml:"font"`
+		FontSize   int    `toml:"fontsize"`
+		Timestamp  bool   `toml:"timestamp"`
+		Shell      bool   `toml:"shell"`
+		Scrollback int    `toml:"scrollback"`
 	} `toml:"ui"`
 	Highlight struct {
 		Groups []string `toml:"groups"`
 	} `toml:"highlight"`
-	Theme Theme `toml:"theme"` ///< Added Theme section
+	Theme Theme `toml:"theme"`
 }
 
 /**
@@ -131,7 +106,6 @@ type Config struct {
 type App struct {
 	config       Config
 	port         *serial.Port
-	history      []string
 	isConnected  bool
 	clients      map[string]*Client
 	clientsMu    sync.RWMutex
@@ -143,7 +117,7 @@ type App struct {
 	httpServer   *http.Server
 	ctx          context.Context
 	cancel       context.CancelFunc
-	scriptEngine *ScriptEngine ///< Added Script Engine
+	scriptEngine *ScriptEngine
 }
 
 /**
@@ -162,7 +136,7 @@ type ScriptEngine struct {
 	state          *lua.LState
 	ctx            context.Context
 	cancel         context.CancelFunc
-	serialDataChan chan string ///< Channel to feed clean serial data to Lua wait()
+	serialDataChan chan string
 	isRunning      bool
 	mu             sync.Mutex
 }
@@ -173,14 +147,46 @@ var upgrader = websocket.Upgrader{
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
+// Win32 API declarations
 var (
-	modkernel32     = syscall.NewLazyDLL("kernel32.dll")
-	procFreeConsole = modkernel32.NewProc("FreeConsole")
+	modkernel32      = syscall.NewLazyDLL("kernel32.dll")
+	procFreeConsole  = modkernel32.NewProc("FreeConsole")
 	procAllocConsole = modkernel32.NewProc("AllocConsole")
+
+	moduser32            = syscall.NewLazyDLL("user32.dll")
+	procFindWindowW      = moduser32.NewProc("FindWindowW")
+	procSendMessageW     = moduser32.NewProc("SendMessageW")
+	procLoadIconW        = moduser32.NewProc("LoadIconW")
+	procGetModuleHandleW = modkernel32.NewProc("GetModuleHandleW")
+	procShowWindow       = moduser32.NewProc("ShowWindow")
+	procMoveWindow       = moduser32.NewProc("MoveWindow")
+	procGetSystemMetrics = moduser32.NewProc("GetSystemMetrics")
+	procEnumChildWindows = moduser32.NewProc("EnumChildWindows")
 )
 
-// Global window handle used to control visibility from HTTP handlers
+const (
+	SW_HIDE = 0
+	SW_SHOW = 5
+
+	SM_CXSCREEN = 0
+	SM_CYSCREEN = 1
+)
+
 var appHwnd uintptr = 0
+
+// Callbacks for hiding/showing child windows recursively
+func hideChildWindowProc(hwnd syscall.Handle, lparam uintptr) uintptr {
+	procShowWindow.Call(uintptr(hwnd), SW_HIDE)
+	return 1
+}
+
+func showChildWindowProc(hwnd syscall.Handle, lparam uintptr) uintptr {
+	procShowWindow.Call(uintptr(hwnd), SW_SHOW)
+	return 1
+}
+
+var hideChildCallback = syscall.NewCallback(hideChildWindowProc)
+var showChildCallback = syscall.NewCallback(showChildWindowProc)
 
 /**
  * @brief Finds the window by title and sets its icon from the embedded resource.
@@ -190,28 +196,19 @@ func setWindowIcon(title string) {
 	time.Sleep(500 * time.Millisecond) // Wait for window to be created
 	titlePtr, _ := syscall.UTF16PtrFromString(title)
 
-	// 1. Find Window Handle (HWND)
 	hwnd, _, _ := procFindWindowW.Call(uintptr(0), uintptr(unsafe.Pointer(titlePtr)))
 	if hwnd == 0 {
 		return
 	}
 
-	// 2. Get Application Instance Handle (HINSTANCE)
 	hInstance, _, _ := procGetModuleHandleW.Call(uintptr(0))
-
-	// 3. Load Icon from Resource.
-	// MAKEINTRESOURCE(1) is equivalent to uintptr(1). ID 1 is the default icon generated by go-winres.
 	icon, _, _ := procLoadIconW.Call(hInstance, uintptr(1))
 	if icon == 0 {
 		return
 	}
 
-	// 4. Send Message to set Icon
-	// WM_SETICON = 0x0080
-	// ICON_BIG = 1
-	// ICON_SMALL = 0
 	procSendMessageW.Call(hwnd, 0x0080, 1, icon) // Set Big Icon
-	procSendMessageW.Call(hwnd, 0x0080, 0, icon) // Set Small Icon (Title bar icon)
+	procSendMessageW.Call(hwnd, 0x0080, 0, icon) // Set Small Icon
 }
 
 func hideConsole() {
@@ -282,34 +279,45 @@ func main() {
 	time.Sleep(500 * time.Millisecond)
 	w := webview.New(true)
 	defer w.Destroy()
-	
+
+	// 1. Hide window and child windows immediately to prevent white flash
 	appHwnd = uintptr(w.Window())
 	procShowWindow.Call(appHwnd, SW_HIDE)
+	procEnumChildWindows.Call(appHwnd, hideChildCallback, 0)
 
+	// 2. Configure window
 	w.SetTitle("SerialZero")
-	
 	width := 1024
 	height := 768
-	
+
+	// 3. Center window
 	screenW, _, _ := procGetSystemMetrics.Call(uintptr(SM_CXSCREEN))
 	screenH, _, _ := procGetSystemMetrics.Call(uintptr(SM_CYSCREEN))
 	posX := (int(screenW) - width) / 2
 	posY := (int(screenH) - height) / 2
-	if posX < 0 { posX = 0 }
-	if posY < 0 { posY = 0 }
-	
+	if posX < 0 {
+		posX = 0
+	}
+	if posY < 0 {
+		posY = 0
+	}
+
 	procMoveWindow.Call(appHwnd, uintptr(posX), uintptr(posY), uintptr(width), uintptr(height), 0)
 
+	// 4. Fallback: force show after 5 seconds if frontend fails to signal
 	go func() {
 		time.Sleep(5 * time.Second)
 		if appHwnd != 0 {
 			procShowWindow.Call(appHwnd, SW_SHOW)
+			procEnumChildWindows.Call(appHwnd, showChildCallback, 0)
 		}
 	}()
 
+	// 5. Navigate and run
 	w.Navigate("http://localhost:8080")
 	go setWindowIcon("SerialZero")
 	w.Run()
+
 	cancel()
 	os.Exit(0)
 }
@@ -332,9 +340,13 @@ func (a *App) runWebServer() {
 
 	// Endpoint to receive frontend ready signal and show main window smoothly
 	r.POST("/ready", func(c *gin.Context) {
-		if appHwnd != 0 {
-			procShowWindow.Call(appHwnd, SW_SHOW)
-		}
+		go func() {
+			time.Sleep(50 * time.Millisecond) // Slight delay to ensure final render is complete
+			if appHwnd != 0 {
+				procShowWindow.Call(appHwnd, SW_SHOW)
+				procEnumChildWindows.Call(appHwnd, showChildCallback, 0)
+			}
+		}()
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
@@ -350,7 +362,6 @@ func (a *App) runWebServer() {
 	r.POST("/getconfig", a.handleGetConfig)
 	r.POST("/saveconfig", a.handleSaveConfig)
 
-	// Script routes
 	r.POST("/listscripts", a.handleListScripts)
 	r.POST("/runscript", a.handleRunScript)
 	r.POST("/stopscript", a.handleStopScript)
@@ -556,7 +567,6 @@ func (a *App) handleSetMode(c *gin.Context) {
 }
 
 func (a *App) handleClear(c *gin.Context) {
-	a.history = []string{}
 	a.broadcast(map[string]interface{}{"type": "clear"})
 	c.JSON(200, gin.H{"status": "ok"})
 }
@@ -571,6 +581,8 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to parse configuration: " + err.Error()})
 		return
 	}
+
+	// Apply defaults if missing
 	if newConfig.Serial.Port == "" {
 		newConfig.Serial.Port = "COM1"
 	}
@@ -587,16 +599,19 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		newConfig.Serial.Parity = "N"
 	}
 	if newConfig.UI.Font == "" {
-		newConfig.UI.Font = "Nerd Font Mono"
+		newConfig.UI.Font = "Cascadia Code"
 	}
 	if newConfig.UI.FontSize == 0 {
 		newConfig.UI.FontSize = 14
+	}
+	if newConfig.UI.Scrollback == 0 {
+		newConfig.UI.Scrollback = DefaultScrollback
 	}
 	if newConfig.Log.Path == "" {
 		newConfig.Log.Path = "./logs"
 	}
 	if newConfig.Highlight.Groups == nil {
-		newConfig.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
+		newConfig.Highlight.Groups = []string{"error:#ff0000", "warn:#ffa500", "ok:#00ff00"}
 	}
 	if newConfig.Theme.Name == "" {
 		newConfig.Theme.Name = "Default"
@@ -609,10 +624,12 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		return
 	}
 	defer file.Close()
+
 	if err := toml.NewEncoder(file).Encode(a.config); err != nil {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to write config: " + err.Error()})
 		return
 	}
+
 	a.broadcast(map[string]interface{}{"type": "config", "config": a.config, "connected": a.isConnected, "mode": a.dataMode})
 	c.JSON(200, gin.H{"status": "ok"})
 }
@@ -782,13 +799,11 @@ func (a *App) processAndBroadcast(data []byte) {
 
 	a.broadcast(map[string]interface{}{"type": "message", "message": msg})
 
-	// Inject data into Script Engine (stripped of ANSI codes for clean matching)
 	if a.scriptEngine != nil && a.scriptEngine.isRunning {
 		cleanData := ansiRegex.ReplaceAllString(string(data), "")
 		select {
 		case a.scriptEngine.serialDataChan <- cleanData:
 		default:
-			// Drop if channel is full (script not consuming fast enough)
 		}
 	}
 }
@@ -799,26 +814,34 @@ func (a *App) loadConfig() {
 		a.config.Serial.Baud = 9600
 		a.config.Serial.Databits = 8
 		a.config.Serial.Stopbits = 1
+
 		a.config.Serial.Parity = "N"
 		a.config.Log.Path = "./logs"
-		a.config.UI.Font = "Nerd Font Mono"
+		a.config.UI.Font = "Cascadia Code"
 		a.config.UI.FontSize = 14
 		a.config.UI.Timestamp = true
 		a.config.UI.Shell = true
-		a.config.Highlight.Groups = []string{"ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"}
+		a.config.UI.Scrollback = DefaultScrollback
+		a.config.Highlight.Groups = []string{"error:#ff0000", "warn:#ffa500", "ok:#00ff00"}
 		a.config.Theme = GetDefaultTheme()
 	}
+
+	// Ensure defaults if partially missing
 	if a.config.UI.Font == "" {
-		a.config.UI.Font = "Nerd Font Mono"
+		a.config.UI.Font = "Cascadia Code"
 	}
 	if a.config.UI.FontSize == 0 {
 		a.config.UI.FontSize = 14
 	}
+	if a.config.UI.Scrollback == 0 {
+		a.config.UI.Scrollback = DefaultScrollback
+	}
 	if a.config.Theme.Name == "" {
 		a.config.Theme = GetDefaultTheme()
 	}
+
 	os.MkdirAll(a.config.Log.Path, 0755)
-	os.MkdirAll("./scripts", 0755) // Ensure scripts directory exists
+	os.MkdirAll("./scripts", 0755)
 }
 
 // ================= SCRIPT ENGINE IMPLEMENTATION =================
@@ -916,13 +939,11 @@ func (se *ScriptEngine) Run(filename string) {
 			se.app.broadcast(map[string]interface{}{"type": "script_log", "message": "🏁 Script execution finished."})
 		}()
 
-		// Execute script
 		if err := L.DoFile(filepath.Join("./scripts", filename)); err != nil {
 			se.app.broadcast(map[string]interface{}{"type": "script_log", "message": "❌ Script Error: " + err.Error()})
 			return
 		}
 
-		// Call main() if exists
 		mainFn := L.GetGlobal("main")
 		if mainFn.Type() == lua.LTFunction {
 			if err := L.CallByParam(lua.P{Fn: mainFn, NRet: 0, Protect: true}); err != nil {

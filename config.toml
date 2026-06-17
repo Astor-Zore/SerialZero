@@ -13,9 +13,10 @@
   fontsize = 14
   timestamp = true
   shell = true
+  scrollback = 100000
 
 [highlight]
-  groups = ["audio:#bfd200", "gain:#f16000"]
+  groups = ["audio:#bfd200", "gain:#f16000", "new_wear:#00ff00", "STANDBY:#ff0000"]
 
 [theme]
   name = "Monokai"
