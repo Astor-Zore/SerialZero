@@ -889,7 +889,7 @@ function exportLog() {
     const url = URL.createObjectURL(blob); 
     const a = document.createElement('a'); 
     a.href = url; 
-    a.download = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.txt`; 
+    a.download = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.log`; 
     a.click(); 
     URL.revokeObjectURL(url); 
 } 
