@@ -428,10 +428,29 @@ textarea {
         z-index: 10;
         height: calc(100vh - 40px);
         box-shadow: 2px 0 5px rgba(0,0,0,0.5);
+        transform: translateX(0);
+        transition: transform 0.2s ease;
     }
     .sidebar.collapsed {
         transform: translateX(-100%);
         width: 280px; /* Restore width for transition effect on mobile */
+    }
+
+    .script-panel {
+        position: absolute;
+        right: 0;
+        z-index: 10;
+        height: calc(100vh - 40px);
+        box-shadow: -4px 0 10px rgba(0,0,0,0.3);
+        transform: translateX(0);
+        transition: transform 0.2s ease;
+    }
+
+    .script-panel.collapsed {
+        transform: translateX(100%);
+        width: 300px;
+        border-left: none;
+        opacity: 1;
     }
 }
 
