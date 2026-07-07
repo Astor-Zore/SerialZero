@@ -27,6 +27,9 @@ let inputArea = document.getElementById('input-area');
 let shellArea = document.getElementById('shell-area'); 
 let timeGutterEl = document.getElementById('time-gutter'); 
 
+const DEFAULT_FONT_STACK = "Consolas, 'Cascadia Code', 'Fira Code', Menlo, Monaco, 'Courier New', monospace";
+
+
 // --- Theme Presets Definition --- 
 const themePresets = { 
     "Default": { Background: "#1e1e1e", Foreground: "#cccccc", Cursor: "#ffffff", Black: "#000000", Red: "#cd3131", Green: "#0dbc79", Yellow: "#e5e510", Blue: "#2472c8", Magenta: "#bc3fbc", Cyan: "#11a8cd", White: "#e5e5e5", BrightBlack: "#666666", BrightRed: "#f14c4c", BrightGreen: "#23d18b", BrightYellow: "#f5f543", BrightBlue: "#3b8eea", BrightMagenta: "#d670d6", BrightCyan: "#29b8db", BrightWhite: "#ffffff" }, 
@@ -145,9 +148,10 @@ class TimeGutter {
     } 
 
     syncFont() { 
-        this.el.style.fontFamily = document.getElementById('font-input').value || 'Consolas, monospace'; 
-        this.el.style.fontSize = (document.getElementById('fontsize-input').value || '14') + 'px'; 
-    } 
+        const userFont = document.getElementById('font-input').value;
+        this.el.style.fontFamily = getFullFontStack(userFont); 
+    }
+
 
     tryGetCellHeight() { 
         if (!this.term || !this.term.element) return; 
@@ -229,6 +233,14 @@ class TimeGutter {
 } 
 
 // ================= CORE LOGIC ================= 
+
+function getFullFontStack(userFont) {
+    if (!userFont || userFont.trim() === '') {
+        return DEFAULT_FONT_STACK;
+    }
+    return `${userFont}, ${DEFAULT_FONT_STACK}`;
+}
+
 function syncShellUI(enabled) { 
     if (enabled) { 
         outputContainer.style.display = 'none'; 
@@ -693,7 +705,7 @@ function initTerminal() {
             black: currentTheme.Black, red: currentTheme.Red, green: currentTheme.Green, yellow: currentTheme.Yellow, blue: currentTheme.Blue, magenta: currentTheme.Magenta, cyan: currentTheme.Cyan, white: currentTheme.White, brightBlack: currentTheme.BrightBlack, brightRed: currentTheme.BrightRed, brightGreen: currentTheme.BrightGreen, brightYellow: currentTheme.BrightYellow, brightBlue: currentTheme.BrightBlue, brightMagenta: currentTheme.BrightMagenta, brightCyan: currentTheme.BrightCyan, brightWhite: currentTheme.BrightWhite 
         }, 
         fontSize: parseInt(document.getElementById('fontsize-input').value) || 14, 
-        fontFamily: document.getElementById('font-input').value || 'Consolas, monospace', 
+        fontFamily: getFullFontStack(document.getElementById('font-input').value), 
         scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000, 
         convertEol: false 
     }); 
@@ -975,8 +987,9 @@ function updatePortInfo(port, baud) {
 function applyFontSettings(font, size) { 
     const output = document.getElementById('output'); 
     if (font) { 
-        output.style.fontFamily = font; 
-        if (term) term.setOption('fontFamily', font); 
+        const fullFont = getFullFontStack(font);
+        output.style.fontFamily = fullFont; 
+        if (term) term.setOption('fontFamily', fullFont); 
     } 
     if (size) { 
         output.style.fontSize = size + 'px'; 
@@ -988,7 +1001,7 @@ function applyFontSettings(font, size) {
         } 
     } 
     if (timeGutter) timeGutter.syncFont(); 
-} 
+}
 
 function loadConfig() { 
     fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => { 
