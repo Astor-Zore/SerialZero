@@ -21,6 +21,9 @@
             <button id="scan-btn" class="tool-btn">Scan</button>
             <button id="clear-btn" class="tool-btn">Clear</button>
             <button id="export-btn" class="tool-btn">Export</button>
+            <!-- 导入日志 -->
+            <input type="file" id="import-log-input" accept=".txt,.log" style="display: none;">
+            <button id="import-log-btn" class="tool-btn">Import Log</button>
             <button id="toggle-script-btn" class="icon-btn">Scripts</button>
         </div>
     </div>
@@ -28,6 +31,7 @@
     <!-- Main Layout -->
     <div class="main-container">
         <div id="sidebar" class="sidebar">
+            <!-- 1. 串口设置 -->
             <div class="config-section">
                 <h3>Serial Port</h3>
                 <label>Port: <input type="text" id="port-input" value="COM1"></label>
@@ -55,6 +59,7 @@
                 </label>
             </div>
 
+            <!-- 2. 界面显示设置 -->
             <div class="config-section">
                 <h3>Display</h3>
                 <label>Font: <input type="text" id="font-input" value="Cascadia Code"></label>
@@ -77,13 +82,7 @@
                 </div>
             </div>
 
-            <div class="config-section">
-                <h3>Highlight (regex:color)</h3>
-                <textarea id="highlight-input" rows="4" spellcheck="false">error:#ff0000
-warn:#ffa500
-ok:#00ff00</textarea>
-            </div>
-
+            <!-- 3. 主题设置 -->
             <div class="config-section">
                 <h3>Theme</h3>
                 <label>Preset:
@@ -102,7 +101,17 @@ ok:#00ff00</textarea>
                     <label>Foreground: <input type="color" id="theme-fg" value="#cccccc"></label>
                     <label>Cursor: <input type="color" id="theme-cursor" value="#ffffff"></label>
                 </div>
-                <button id="save-config-btn" class="action-btn" style="margin-top: 10px; width: 100%;">Save Config</button>
+            </div>
+
+            <!-- 4. 保存配置按钮 -->
+            <button id="save-config-btn" class="action-btn" style="width: 100%; padding: 8px;">Save Config</button>
+
+            <!-- 5. 高亮组设置 (使用 highlight-section 类撑满剩余高度) -->
+            <div class="config-section highlight-section">
+                <h3>Highlight (regex:color)</h3>
+                <textarea id="highlight-input" spellcheck="false">error:#ff0000
+warn:#ffa500
+ok:#00ff00</textarea>
             </div>
         </div>
 

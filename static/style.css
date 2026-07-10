@@ -134,6 +134,7 @@ body {
     flex: 1;
     display: flex;
     overflow: hidden;
+    position: relative; /* 关键：为窄屏下绝对定位的侧边栏提供基准，避免覆盖工具栏 */
 }
 
 /* Left Sidebar */
@@ -141,7 +142,7 @@ body {
     width: 280px;
     background-color: var(--bg-secondary);
     border-right: 1px solid var(--border-color);
-    overflow-y: auto;
+    overflow: hidden; /* 修改：从 auto 改为 hidden，让 textarea 内部滚动 */
     padding: 10px;
     display: flex;
     flex-direction: column;
@@ -169,6 +170,19 @@ body {
     letter-spacing: 1px;
     border-bottom: 1px solid var(--border-color);
     padding-bottom: 4px;
+}
+
+/* 高亮组配置，撑满剩余高度 */
+.config-section.highlight-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.config-section.highlight-section textarea {
+    flex: 1;
+    height: auto;
+    resize: none; /* 禁止手动拉伸，使用 flex 自动撑满 */
 }
 
 label {
@@ -233,7 +247,7 @@ textarea {
 
 /* Time Gutter: The elegant sidebar for timestamps */
 .time-gutter {
-    width: 120px; /* Increased width to comfortably fit HH:mm:ss.SSS */
+    width: 130px; /* 稍微加宽，避免太挤 */
     background-color: var(--bg-secondary);
     border-right: 1px solid var(--border-color);
     overflow: hidden; /* Crucial: no independent scrolling */
@@ -252,7 +266,7 @@ textarea {
     position: absolute;
     left: 0;
     right: 0;
-    padding: 0 8px;
+    padding: 0 12px; /* 增加 padding，避免时间戳文字太靠边 */
     white-space: nowrap;
     overflow: visible;
     box-sizing: border-box;
@@ -425,27 +439,27 @@ textarea {
 @media (max-width: 768px) {
     .sidebar {
         position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
         z-index: 10;
-        height: calc(100vh - 40px);
         box-shadow: 2px 0 5px rgba(0,0,0,0.5);
-        transform: translateX(0);
         transition: transform 0.2s ease;
     }
     .sidebar.collapsed {
         transform: translateX(-100%);
-        width: 280px; /* Restore width for transition effect on mobile */
+        width: 280px;
     }
 
     .script-panel {
         position: absolute;
+        top: 0;
         right: 0;
+        bottom: 0;
         z-index: 10;
-        height: calc(100vh - 40px);
         box-shadow: -4px 0 10px rgba(0,0,0,0.3);
-        transform: translateX(0);
         transition: transform 0.2s ease;
     }
-
     .script-panel.collapsed {
         transform: translateX(100%);
         width: 300px;

@@ -15,7 +15,7 @@ function main()
 	end
 
 
-	delay(500)
+	delay(2000)
 	log("📤 Sending 'bt set_name astor_bt'...")
 	send("bt set_name astor_bt\r\n")
 
