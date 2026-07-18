@@ -96,8 +96,8 @@ ok:#00ff00</textarea>
             </div>
 
             <!-- Input Area (Send Panel) -->
-            <!-- This is hidden when Shell ON via JS logic -->
-            <div id="input-area" class="input-area collapsed">
+            <!-- Added display: none to prevent flash on startup if Shell is ON -->
+            <div id="input-area" class="input-area collapsed" style="display: none;">
                 <button id="send-toggle-btn" class="toggle-panel-btn">▼ Send</button>
                 <div class="panel-content input-row">
                     <input type="text" id="input" placeholder="Type here and press Enter..." autocomplete="off">

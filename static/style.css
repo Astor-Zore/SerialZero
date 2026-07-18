@@ -216,9 +216,8 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
 .panel-content {
     display: none; /* Hidden by default */
     flex: 1;
-    flex-direction: column;
+    flex-direction: column; /* Default to column (for Filter) */
     overflow: hidden;
-    min-height: 30px; /* Ensure it has some height when shown */
 }
 
 /* Show content when parent is NOT collapsed */
@@ -273,9 +272,9 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     flex: 1;
     overflow-y: auto;
     background-color: var(--bg-primary);
-    border-top: 1px solid var(--border-color); /* Use top border instead of full border for cleanliness */
+    border-top: 1px solid var(--border-color);
     padding: 5px 10px;
-    font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace; /* Default, will be overwritten by JS */
+    font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
     font-size: 14px; 
     white-space: pre-wrap;
 }
@@ -297,23 +296,39 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     transition: height 0.2s ease;
 }
 .input-area.collapsed { height: 30px; }
-.input-area:not(.collapsed) { height: 70px; }
+/* Increased height to 70px to fully show input and button */
+.input-area:not(.collapsed) { height: 70px; } 
 
-.input-row { 
-    display: flex; 
-    gap: 10px; 
-    padding: 10px 10px; /* Added padding for left/right space */
-    align-items: center; 
-    height: 100%; 
+/* Force Send Panel content to be Row layout */
+.input-area .panel-content {
+    flex-direction: row !important; /* Override the default column */
+    align-items: center;
+    gap: 10px;
+    height: 100%;
+    padding: 5px 10px 10px 10px; /* Top padding added to push content down slightly */
 }
+
+/* Input styling: Match standard inputs in sidebar */
 #input { 
     flex: 1; 
-    background-color: var(--bg-primary); 
-    border: 1px solid var(--border-color); 
-    color: var(--text-primary); 
-    padding: 6px; 
+    background-color: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 4px; /* Match sidebar input padding */
+    border-radius: 2px;
     font-family: monospace; 
-    font-size: 14px; 
+    font-size: 12px; /* Match sidebar font size */
+    height: auto; /* Auto height based on padding */
+    box-sizing: border-box;
+}
+
+/* Send Button styling: Match standard action buttons */
+#send-btn {
+    height: auto; /* Auto height */
+    padding: 4px 10px; /* Match toolbar button padding */
+    font-size: 12px; /* Match toolbar button font size */
+    border-radius: 3px;
+    /* Inherits .action-btn class from HTML, so background/border is handled there */
 }
 
 /* Right Script Panel */
