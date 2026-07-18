@@ -1,5 +1,4 @@
 //go:build windows
-
 package main
 
 import (
@@ -37,40 +36,39 @@ import (
 
 //go:embed static
 var staticEmbed embed.FS
-
 //go:embed index.html
 var indexHTML string
-
 //go:embed app.ico
 var iconData []byte
 
 // DefaultScrollback defines the default log buffer size.
-const DefaultScrollback = 100000
+// Updated to 1,000,000 for deep logging support.
+const DefaultScrollback = 1000000
 
 /**
  * @brief Theme configuration structure for UI customization.
  */
 type Theme struct {
-	Name          string `toml:"name"`
-	Background    string `toml:"background"`
-	Foreground    string `toml:"foreground"`
-	Cursor        string `toml:"cursor"`
-	Black         string `toml:"black"`
-	Red           string `toml:"red"`
-	Green         string `toml:"green"`
-	Yellow        string `toml:"yellow"`
-	Blue          string `toml:"blue"`
-	Magenta       string `toml:"magenta"`
-	Cyan          string `toml:"cyan"`
-	White         string `toml:"white"`
-	BrightBlack   string `toml:"brightblack"`
-	BrightRed     string `toml:"brightred"`
-	BrightGreen   string `toml:"brightgreen"`
-	BrightYellow  string `toml:"brightyellow"`
-	BrightBlue    string `toml:"brightblue"`
+	Name string `toml:"name"`
+	Background string `toml:"background"`
+	Foreground string `toml:"foreground"`
+	Cursor string `toml:"cursor"`
+	Black string `toml:"black"`
+	Red string `toml:"red"`
+	Green string `toml:"green"`
+	Yellow string `toml:"yellow"`
+	Blue string `toml:"blue"`
+	Magenta string `toml:"magenta"`
+	Cyan string `toml:"cyan"`
+	White string `toml:"white"`
+	BrightBlack string `toml:"brightblack"`
+	BrightRed string `toml:"brightred"`
+	BrightGreen string `toml:"brightgreen"`
+	BrightYellow string `toml:"brightyellow"`
+	BrightBlue string `toml:"brightblue"`
 	BrightMagenta string `toml:"brightmagenta"`
-	BrightCyan    string `toml:"brightcyan"`
-	BrightWhite   string `toml:"brightwhite"`
+	BrightCyan string `toml:"brightcyan"`
+	BrightWhite string `toml:"brightwhite"`
 }
 
 /**
@@ -78,21 +76,21 @@ type Theme struct {
  */
 type Config struct {
 	Serial struct {
-		Port     string `toml:"port"`
-		Baud     int    `toml:"baud"`
-		Databits int    `toml:"databits"`
-		Stopbits int    `toml:"stopbits"`
-		Parity   string `toml:"parity"`
+		Port string `toml:"port"`
+		Baud int `toml:"baud"`
+		Databits int `toml:"databits"`
+		Stopbits int `toml:"stopbits"`
+		Parity string `toml:"parity"`
 	} `toml:"serial"`
 	Log struct {
 		Path string `toml:"path"`
 	} `toml:"log"`
 	UI struct {
-		Font       string `toml:"font"`
-		FontSize   int    `toml:"fontsize"`
-		Timestamp  bool   `toml:"timestamp"`
-		Shell      bool   `toml:"shell"`
-		Scrollback int    `toml:"scrollback"`
+		Font string `toml:"font"`
+		FontSize int `toml:"fontsize"`
+		Timestamp bool `toml:"timestamp"`
+		Shell bool `toml:"shell"`
+		Scrollback int `toml:"scrollback"`
 	} `toml:"ui"`
 	Highlight struct {
 		Groups []string `toml:"groups"`
@@ -104,19 +102,19 @@ type Config struct {
  * @brief App main struct holding application state.
  */
 type App struct {
-	config       Config
-	port         *serial.Port
-	isConnected  bool
-	clients      map[string]*Client
-	clientsMu    sync.RWMutex
-	sendHistory  []string
-	dataMode     string
-	writeChan    chan []byte
-	receiveChan  chan []byte
-	mu           sync.Mutex
-	httpServer   *http.Server
-	ctx          context.Context
-	cancel       context.CancelFunc
+	config Config
+	port *serial.Port
+	isConnected bool
+	clients map[string]*Client
+	clientsMu sync.RWMutex
+	sendHistory []string
+	dataMode string
+	writeChan chan []byte
+	receiveChan chan []byte
+	mu sync.Mutex
+	httpServer *http.Server
+	ctx context.Context
+	cancel context.CancelFunc
 	scriptEngine *ScriptEngine
 }
 
@@ -125,41 +123,42 @@ type App struct {
  */
 type Client struct {
 	conn *websocket.Conn
-	mu   sync.Mutex
+	mu sync.Mutex
 }
 
 /**
  * @brief ScriptEngine manages Lua script execution and state.
  */
 type ScriptEngine struct {
-	app            *App
-	state          *lua.LState
-	ctx            context.Context
-	cancel         context.CancelFunc
+	app *App
+	state *lua.LState
+	ctx context.Context
+	cancel context.CancelFunc
 	serialDataChan chan string
-	isRunning      bool
-	mu             sync.Mutex
+	isRunning bool
+	mu sync.Mutex
 }
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
 }
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
 // Win32 API declarations
 var (
-	modkernel32      = syscall.NewLazyDLL("kernel32.dll")
-	procFreeConsole  = modkernel32.NewProc("FreeConsole")
+	modkernel32 = syscall.NewLazyDLL("kernel32.dll")
+	procFreeConsole = modkernel32.NewProc("FreeConsole")
 	procAllocConsole = modkernel32.NewProc("AllocConsole")
-
-	moduser32            = syscall.NewLazyDLL("user32.dll")
-	procFindWindowW      = moduser32.NewProc("FindWindowW")
-	procSendMessageW     = moduser32.NewProc("SendMessageW")
-	procLoadIconW        = moduser32.NewProc("LoadIconW")
+	moduser32 = syscall.NewLazyDLL("user32.dll")
+	procFindWindowW = moduser32.NewProc("FindWindowW")
+	procSendMessageW = moduser32.NewProc("SendMessageW")
+	procLoadIconW = moduser32.NewProc("LoadIconW")
 	procGetModuleHandleW = modkernel32.NewProc("GetModuleHandleW")
-	procShowWindow       = moduser32.NewProc("ShowWindow")
-	procMoveWindow       = moduser32.NewProc("MoveWindow")
+	procShowWindow = moduser32.NewProc("ShowWindow")
+	procMoveWindow = moduser32.NewProc("MoveWindow")
 	procGetSystemMetrics = moduser32.NewProc("GetSystemMetrics")
 	procEnumChildWindows = moduser32.NewProc("EnumChildWindows")
 )
@@ -167,7 +166,6 @@ var (
 const (
 	SW_HIDE = 0
 	SW_SHOW = 5
-
 	SM_CXSCREEN = 0
 	SM_CYSCREEN = 1
 )
@@ -195,18 +193,15 @@ var showChildCallback = syscall.NewCallback(showChildWindowProc)
 func setWindowIcon(title string) {
 	time.Sleep(500 * time.Millisecond) // Wait for window to be created
 	titlePtr, _ := syscall.UTF16PtrFromString(title)
-
 	hwnd, _, _ := procFindWindowW.Call(uintptr(0), uintptr(unsafe.Pointer(titlePtr)))
 	if hwnd == 0 {
 		return
 	}
-
 	hInstance, _, _ := procGetModuleHandleW.Call(uintptr(0))
 	icon, _, _ := procLoadIconW.Call(hInstance, uintptr(1))
 	if icon == 0 {
 		return
 	}
-
 	procSendMessageW.Call(hwnd, 0x0080, 1, icon) // Set Big Icon
 	procSendMessageW.Call(hwnd, 0x0080, 0, icon) // Set Small Icon
 }
@@ -239,21 +234,18 @@ func redirectStdoutToNull() {
 func main() {
 	hideConsole()
 	redirectStdoutToNull()
-
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		clients:     make(map[string]*Client),
+		clients: make(map[string]*Client),
 		sendHistory: []string{},
-		dataMode:    "ascii",
-		writeChan:   make(chan []byte, 1024),
+		dataMode: "ascii",
+		writeChan: make(chan []byte, 1024),
 		receiveChan: make(chan []byte, 32768),
-		ctx:         ctx,
-		cancel:      cancel,
+		ctx: ctx,
+		cancel: cancel,
 	}
-
 	app.loadConfig()
 	go app.runWebServer()
-
 	go func() {
 		systray.Run(func() {
 			systray.SetIcon(iconData)
@@ -275,7 +267,6 @@ func main() {
 			}()
 		}, nil)
 	}()
-
 	time.Sleep(500 * time.Millisecond)
 	w := webview.New(true)
 	defer w.Destroy()
@@ -301,7 +292,6 @@ func main() {
 	if posY < 0 {
 		posY = 0
 	}
-
 	procMoveWindow.Call(appHwnd, uintptr(posX), uintptr(posY), uintptr(width), uintptr(height), 0)
 
 	// 4. Fallback: force show after 5 seconds if frontend fails to signal
@@ -317,7 +307,6 @@ func main() {
 	w.Navigate("http://localhost:8080")
 	go setWindowIcon("SerialZero")
 	w.Run()
-
 	cancel()
 	os.Exit(0)
 }
@@ -326,14 +315,12 @@ func (a *App) runWebServer() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-
 	staticFS, err := fs.Sub(staticEmbed, "static")
 	if err != nil {
 		log.Printf("Failed to get static sub-fs: %v", err)
 		return
 	}
 	r.StaticFS("/static", http.FS(staticFS))
-
 	r.GET("/", func(c *gin.Context) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(indexHTML))
 	})
@@ -361,7 +348,6 @@ func (a *App) runWebServer() {
 	r.POST("/clear", a.handleClear)
 	r.POST("/getconfig", a.handleGetConfig)
 	r.POST("/saveconfig", a.handleSaveConfig)
-
 	r.POST("/listscripts", a.handleListScripts)
 	r.POST("/runscript", a.handleRunScript)
 	r.POST("/stopscript", a.handleStopScript)
@@ -384,7 +370,6 @@ func (a *App) handleWebSocket(c *gin.Context) {
 	a.clientsMu.Lock()
 	a.clients[clientID] = &Client{conn: conn}
 	a.clientsMu.Unlock()
-
 	defer func() {
 		a.clientsMu.Lock()
 		delete(a.clients, clientID)
@@ -393,10 +378,10 @@ func (a *App) handleWebSocket(c *gin.Context) {
 	}()
 
 	a.sendToClient(clientID, map[string]interface{}{
-		"type":      "config",
-		"config":    a.config,
+		"type": "config",
+		"config": a.config,
 		"connected": a.isConnected,
-		"mode":      a.dataMode,
+		"mode": a.dataMode,
 	})
 
 	for {
@@ -476,11 +461,11 @@ func (a *App) handleConnect(c *gin.Context) {
 		return
 	}
 	cfg := &serial.Config{
-		Name:        a.config.Serial.Port,
-		Baud:        a.config.Serial.Baud,
-		Size:        byte(a.config.Serial.Databits),
-		StopBits:    serial.StopBits(a.config.Serial.Stopbits),
-		Parity:      serial.Parity(a.config.Serial.Parity[0]),
+		Name: a.config.Serial.Port,
+		Baud: a.config.Serial.Baud,
+		Size: byte(a.config.Serial.Databits),
+		StopBits: serial.StopBits(a.config.Serial.Stopbits),
+		Parity: serial.Parity(a.config.Serial.Parity[0]),
 		ReadTimeout: time.Millisecond * 100,
 	}
 	port, err := serial.OpenPort(cfg)
@@ -583,39 +568,17 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 	}
 
 	// Apply defaults if missing
-	if newConfig.Serial.Port == "" {
-		newConfig.Serial.Port = "COM1"
-	}
-	if newConfig.Serial.Baud == 0 {
-		newConfig.Serial.Baud = 9600
-	}
-	if newConfig.Serial.Databits == 0 {
-		newConfig.Serial.Databits = 8
-	}
-	if newConfig.Serial.Stopbits == 0 {
-		newConfig.Serial.Stopbits = 1
-	}
-	if newConfig.Serial.Parity == "" {
-		newConfig.Serial.Parity = "N"
-	}
-	if newConfig.UI.Font == "" {
-		newConfig.UI.Font = "Cascadia Code"
-	}
-	if newConfig.UI.FontSize == 0 {
-		newConfig.UI.FontSize = 14
-	}
-	if newConfig.UI.Scrollback == 0 {
-		newConfig.UI.Scrollback = DefaultScrollback
-	}
-	if newConfig.Log.Path == "" {
-		newConfig.Log.Path = "./logs"
-	}
-	if newConfig.Highlight.Groups == nil {
-		newConfig.Highlight.Groups = []string{"error:#ff0000", "warn:#ffa500", "ok:#00ff00"}
-	}
-	if newConfig.Theme.Name == "" {
-		newConfig.Theme.Name = "Default"
-	}
+	if newConfig.Serial.Port == "" { newConfig.Serial.Port = "COM1" }
+	if newConfig.Serial.Baud == 0 { newConfig.Serial.Baud = 9600 }
+	if newConfig.Serial.Databits == 0 { newConfig.Serial.Databits = 8 }
+	if newConfig.Serial.Stopbits == 0 { newConfig.Serial.Stopbits = 1 }
+	if newConfig.Serial.Parity == "" { newConfig.Serial.Parity = "N" }
+	if newConfig.UI.Font == "" { newConfig.UI.Font = "Cascadia Code" }
+	if newConfig.UI.FontSize == 0 { newConfig.UI.FontSize = 14 }
+	if newConfig.UI.Scrollback == 0 { newConfig.UI.Scrollback = DefaultScrollback }
+	if newConfig.Log.Path == "" { newConfig.Log.Path = "./logs" }
+	if newConfig.Highlight.Groups == nil { newConfig.Highlight.Groups = []string{"error:#ff0000", "warn:#ffa500", "ok:#00ff00"} }
+	if newConfig.Theme.Name == "" { newConfig.Theme.Name = "Default" }
 
 	a.config = newConfig
 	file, err := os.Create("config.toml")
@@ -624,12 +587,10 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-
 	if err := toml.NewEncoder(file).Encode(a.config); err != nil {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to write config: " + err.Error()})
 		return
 	}
-
 	a.broadcast(map[string]interface{}{"type": "config", "config": a.config, "connected": a.isConnected, "mode": a.dataMode})
 	c.JSON(200, gin.H{"status": "ok"})
 }
@@ -796,7 +757,6 @@ func (a *App) processAndBroadcast(data []byte) {
 			msg = fmt.Sprintf("[%s] %s", timestamp, msg)
 		}
 	}
-
 	a.broadcast(map[string]interface{}{"type": "message", "message": msg})
 
 	if a.scriptEngine != nil && a.scriptEngine.isRunning {
@@ -814,7 +774,6 @@ func (a *App) loadConfig() {
 		a.config.Serial.Baud = 9600
 		a.config.Serial.Databits = 8
 		a.config.Serial.Stopbits = 1
-
 		a.config.Serial.Parity = "N"
 		a.config.Log.Path = "./logs"
 		a.config.UI.Font = "Cascadia Code"
@@ -827,18 +786,10 @@ func (a *App) loadConfig() {
 	}
 
 	// Ensure defaults if partially missing
-	if a.config.UI.Font == "" {
-		a.config.UI.Font = "Cascadia Code"
-	}
-	if a.config.UI.FontSize == 0 {
-		a.config.UI.FontSize = 14
-	}
-	if a.config.UI.Scrollback == 0 {
-		a.config.UI.Scrollback = DefaultScrollback
-	}
-	if a.config.Theme.Name == "" {
-		a.config.Theme = GetDefaultTheme()
-	}
+	if a.config.UI.Font == "" { a.config.UI.Font = "Cascadia Code" }
+	if a.config.UI.FontSize == 0 { a.config.UI.FontSize = 14 }
+	if a.config.UI.Scrollback == 0 { a.config.UI.Scrollback = DefaultScrollback }
+	if a.config.Theme.Name == "" { a.config.Theme = GetDefaultTheme() }
 
 	os.MkdirAll(a.config.Log.Path, 0755)
 	os.MkdirAll("./scripts", 0755)
@@ -851,9 +802,9 @@ func (a *App) loadConfig() {
  */
 func (a *App) NewScriptEngine() *ScriptEngine {
 	return &ScriptEngine{
-		app:            a,
+		app: a,
 		serialDataChan: make(chan string, 100),
-		isRunning:      false,
+		isRunning: false,
 	}
 }
 
@@ -894,7 +845,6 @@ func (se *ScriptEngine) registerAPIs(L *lua.LState) {
 		timeout := time.Duration(timeoutMs) * time.Millisecond
 		timer := time.NewTimer(timeout)
 		defer timer.Stop()
-
 		for {
 			select {
 			case data := <-se.serialDataChan:
@@ -1005,26 +955,26 @@ func (a *App) handleStopScript(c *gin.Context) {
  */
 func GetDefaultTheme() Theme {
 	return Theme{
-		Name:          "Default",
-		Background:    "#1e1e1e",
-		Foreground:    "#cccccc",
-		Cursor:        "#ffffff",
-		Black:         "#000000",
-		Red:           "#cd3131",
-		Green:         "#0dbc79",
-		Yellow:        "#e5e510",
-		Blue:          "#2472c8",
-		Magenta:       "#bc3fbc",
-		Cyan:          "#11a8cd",
-		White:         "#e5e5e5",
-		BrightBlack:   "#666666",
-		BrightRed:     "#f14c4c",
-		BrightGreen:   "#23d18b",
-		BrightYellow:  "#f5f543",
-		BrightBlue:    "#3b8eea",
+		Name: "Default",
+		Background: "#1e1e1e",
+		Foreground: "#cccccc",
+		Cursor: "#ffffff",
+		Black: "#000000",
+		Red: "#cd3131",
+		Green: "#0dbc79",
+		Yellow: "#e5e510",
+		Blue: "#2472c8",
+		Magenta: "#bc3fbc",
+		Cyan: "#11a8cd",
+		White: "#e5e5e5",
+		BrightBlack: "#666666",
+		BrightRed: "#f14c4c",
+		BrightGreen: "#23d18b",
+		BrightYellow: "#f5f543",
+		BrightBlue: "#3b8eea",
 		BrightMagenta: "#d670d6",
-		BrightCyan:    "#29b8db",
-		BrightWhite:   "#ffffff",
+		BrightCyan: "#29b8db",
+		BrightWhite: "#ffffff",
 	}
 }
 

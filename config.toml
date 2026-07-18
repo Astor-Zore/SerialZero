@@ -1,5 +1,5 @@
 [serial]
-  port = "COM50"
+  port = "COM13"
   baud = 115200
   databits = 8
   stopbits = 1
@@ -13,10 +13,10 @@
   fontsize = 14
   timestamp = true
   shell = true
-  scrollback = 100000
+  scrollback = 1000000
 
 [highlight]
-  groups = ["audio:#bfd200", "gain:#f16000", "new_wear:#00ff00", ">>>:#ff36ab", "<<<:#ff36ab", "timeout:#ff006e", "period:#4cc9f0"]
+  groups = ["audio:#bfd200", "gain:#f16000", "new_wear:#00ff00", ">>>:#ff36ab", "<<<:#ff36ab", "timeout:#ff006e", "period:#4cc9f0", "i2s:#ff36ab"]
 
 [theme]
   name = "Dracula"

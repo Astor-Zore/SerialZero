@@ -15,11 +15,23 @@ let xtermLoaded = false;
 let userActionLock = false; 
 let isScriptRunning = false; 
 let timeGutter = null; 
-let isImporting = false; // 标记是否正在导入日志
+
+// --- Filter Feature State ---
+let isFilterEnabled = false;
+let filterRegex = null;
+
+// --- Log Tab State ---
+let currentTab = 'main'; 
+let logTabs = {}; 
 
 // --- Highlight performance optimization --- 
 let combinedHighlightRegex = null; 
 let highlightColorMap = []; 
+
+// --- Performance Config ---
+const MAX_OUTPUT_LINES = 50000; 
+const FLUSH_BATCH_SIZE = 100;    
+let outputTrimOffset = 0;       
 
 // --- DOM References --- 
 let termContainer = document.getElementById('terminal-container'); 
@@ -27,10 +39,12 @@ let outputContainer = document.getElementById('output-container');
 let inputArea = document.getElementById('input-area'); 
 let shellArea = document.getElementById('shell-area'); 
 let timeGutterEl = document.getElementById('time-gutter'); 
+let filterPanel = document.getElementById('filter-panel'); 
+let filterOutput = document.getElementById('filter-output'); 
+let filterInput = document.getElementById('filter-input'); 
 
 const DEFAULT_FONT_STACK = "Consolas, 'Cascadia Code', 'Fira Code', Menlo, Monaco, 'Courier New', monospace";
 
-// --- Theme Presets Definition --- 
 const themePresets = { 
     "Default": { Background: "#1e1e1e", Foreground: "#cccccc", Cursor: "#ffffff", Black: "#000000", Red: "#cd3131", Green: "#0dbc79", Yellow: "#e5e510", Blue: "#2472c8", Magenta: "#bc3fbc", Cyan: "#11a8cd", White: "#e5e5e5", BrightBlack: "#666666", BrightRed: "#f14c4c", BrightGreen: "#23d18b", BrightYellow: "#f5f543", BrightBlue: "#3b8eea", BrightMagenta: "#d670d6", BrightCyan: "#29b8db", BrightWhite: "#ffffff" }, 
     "Dracula": { Background: "#282a36", Foreground: "#f8f8f2", Cursor: "#f8f8f2", Black: "#21222c", Red: "#ff5555", Green: "#50fa7b", Yellow: "#f1fa8c", Blue: "#bd93f9", Magenta: "#ff79c6", Cyan: "#8be9fd", White: "#f8f8f2", BrightBlack: "#6272a4", BrightRed: "#ff6e6e", BrightGreen: "#69ff94", BrightYellow: "#ffffa5", BrightBlue: "#d6acff", BrightMagenta: "#ff92df", BrightCyan: "#a4ffff", BrightWhite: "#ffffff" }, 
@@ -41,16 +55,7 @@ const themePresets = {
 }; 
 
 document.addEventListener('DOMContentLoaded', function() { 
-    try { 
-        if (typeof Terminal !== 'undefined' && typeof FitAddon !== 'undefined') { 
-            xtermLoaded = true; 
-        } else { 
-            xtermLoaded = false; 
-            console.error('xterm.js or FitAddon not found!'); 
-        } 
-    } catch (e) { 
-        xtermLoaded = false; 
-    } 
+    try { if (typeof Terminal !== 'undefined' && typeof FitAddon !== 'undefined') { xtermLoaded = true; } else { xtermLoaded = false; console.error('xterm.js or FitAddon not found!'); } } catch (e) { xtermLoaded = false; } 
     syncShellUI(shellEnabled); 
     initWebSocket(); 
     setupEventListeners(); 
@@ -60,191 +65,362 @@ document.addEventListener('DOMContentLoaded', function() {
     setupSmartCopy(); 
     setupSidebarFocusManagement(); 
     listScripts(); 
+    setupFilterPanel(); 
 }); 
 
-// ================= TIME GUTTER IMPLEMENTATION ================= 
+// ================= TAB LOGIC =================
+function switchTab(tabId) {
+    currentTab = tabId;
+    const terminalWrapper = document.getElementById('terminal-wrapper');
+    const logContainer = document.getElementById('log-views-container');
+    const sidebar = document.getElementById('sidebar');
+    
+    // Update Tab UI
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    const activeTab = document.querySelector(`.tab[data-tab="${tabId}"]`);
+    if (activeTab) activeTab.classList.add('active');
+
+    // Hide all log views first
+    Object.keys(logTabs).forEach(id => {
+        const view = document.getElementById(id);
+        if (view) view.style.display = 'none';
+    });
+
+    if (tabId === 'main') {
+        terminalWrapper.style.display = 'flex';
+        logContainer.style.display = 'none';
+        sidebar.classList.remove('disabled');
+        // Only show inputArea if shell is OFF
+        if (inputArea) inputArea.style.display = shellEnabled ? 'none' : 'flex'; 
+    } else {
+        terminalWrapper.style.display = 'none';
+        logContainer.style.display = 'flex'; 
+        sidebar.classList.add('disabled');
+        if (inputArea) inputArea.style.display = 'none';
+        
+        // Show specific log view
+        const logView = document.getElementById(tabId);
+        if (logView) logView.style.display = 'flex';
+    }
+}
+
+function createLogTab(fileName) {
+    const tabBar = document.getElementById('tab-bar');
+    const logContainer = document.getElementById('log-views-container');
+    
+    const tabId = `log_${Date.now()}`;
+    
+    // Create Tab Button
+    const newTab = document.createElement('div');
+    newTab.className = 'tab';
+    newTab.dataset.tab = tabId;
+    newTab.innerHTML = `${fileName} <span class="tab-close">×</span>`;
+    
+    tabBar.appendChild(newTab);
+    
+    // Get current font settings to apply to new log
+    const currentFont = document.getElementById('font-input').value;
+    const currentFontSize = document.getElementById('fontsize-input').value;
+    const fullFont = getFullFontStack(currentFont);
+
+    // Create Log View Container
+    const logWrapper = document.createElement('div');
+    logWrapper.id = tabId;
+    logWrapper.className = 'terminal-wrapper';
+    logWrapper.style.display = 'none';
+    logWrapper.innerHTML = `
+        <div class="output-container" style="flex: 1;">
+            <div id="${tabId}_output" class="output" style="font-family: ${fullFont}; font-size: ${currentFontSize}px;"></div>
+        </div>
+        <div id="${tabId}_filter_panel" class="filter-panel collapsed">
+             <div class="filter-resize-handle"></div>
+             <button class="toggle-panel-btn">▼ Filter</button>
+             <div class="panel-content">
+                <div class="filter-controls">
+                    <input type="text" id="${tabId}_filter_input" placeholder="Search Log...">
+                    <button id="${tabId}_filter_toggle" class="tool-btn" style="width: 50px;">OFF</button>
+                    <button id="${tabId}_filter_clear" class="tool-btn" style="width: 50px;">Clear</button>
+                </div>
+                <div id="${tabId}_filter_output" class="filter-output" style="font-family: ${fullFont}; font-size: ${currentFontSize}px;"></div>
+             </div>
+        </div>
+    `;
+    
+    logContainer.appendChild(logWrapper);
+    
+    // Initialize State
+    logTabs[tabId] = {
+        messages: [],
+        trimOffset: 0,
+        name: fileName
+    };
+    
+    setupSpecificLogFilter(tabId);
+    switchTab(tabId);
+    
+    return tabId;
+}
+
+function closeLogTab(tabId) {
+    const tabBtn = document.querySelector(`.tab[data-tab="${tabId}"]`);
+    if (tabBtn) tabBtn.remove();
+    
+    const view = document.getElementById(tabId);
+    if (view) view.remove();
+    
+    delete logTabs[tabId];
+    
+    if (currentTab === tabId) {
+        switchTab('main');
+    }
+}
+
+// ================= FILTER PANEL IMPLEMENTATION =================
+function setupFilterPanel() {
+    const panel = document.getElementById('filter-panel');
+    const mainToggleBtn = document.getElementById('filter-main-toggle');
+    const handle = panel.querySelector('.filter-resize-handle');
+    const applyBtn = document.getElementById('filter-apply-btn');
+    
+    // 1. Toggle Panel Visibility
+    mainToggleBtn.addEventListener('click', () => {
+        panel.classList.toggle('collapsed');
+        const arrow = panel.classList.contains('collapsed') ? '▼' : '▲';
+        mainToggleBtn.textContent = `${arrow} Filter`;
+        if(term && fitAddon) fitAddon.fit();
+    });
+
+    // 2. Resize Logic
+    let isResizing = false;
+    handle.addEventListener('mousedown', (e) => { 
+        e.preventDefault(); 
+        isResizing = true; 
+        document.body.style.cursor = 'ns-resize'; 
+        document.body.style.userSelect = 'none'; 
+        panel.style.transition = 'none'; 
+        panel.classList.remove('collapsed'); 
+        mainToggleBtn.textContent = '▲ Filter';
+    });
+    
+    document.addEventListener('mousemove', (e) => { 
+        if (!isResizing) return; 
+        const rect = panel.parentElement.getBoundingClientRect();
+        let h = rect.bottom - e.clientY; 
+        h = Math.max(100, Math.min(h, 600)); 
+        panel.style.height = `${h}px`; 
+    });
+    
+    document.addEventListener('mouseup', () => { 
+        if (isResizing) { 
+            isResizing = false; 
+            document.body.style.cursor = ''; 
+            document.body.style.userSelect = ''; 
+            panel.style.transition = ''; 
+            if(term && fitAddon) fitAddon.fit();
+        } 
+    });
+
+    // 3. Filter Logic
+    filterInput.addEventListener('input', (e) => {
+        const pattern = e.target.value.trim();
+        try { filterRegex = new RegExp(pattern, 'gi'); filterInput.style.borderColor = pattern ? 'var(--accent-color)' : 'var(--border-color)'; } 
+        catch (e) { filterRegex = null; filterInput.style.borderColor = 'var(--danger-color)'; }
+        if (isFilterEnabled) runFullFilter();
+    });
+
+    applyBtn.addEventListener('click', (e) => { 
+        e.stopPropagation(); 
+        isFilterEnabled = !isFilterEnabled; 
+        applyBtn.textContent = isFilterEnabled ? 'ON' : 'OFF'; 
+        applyBtn.style.backgroundColor = isFilterEnabled ? 'var(--success-color)' : ''; 
+        if (isFilterEnabled) runFullFilter(); 
+    });
+    
+    document.getElementById('filter-clear-btn').addEventListener('click', () => { filterOutput.innerHTML = ''; });
+    filterOutput.addEventListener('click', (e) => { 
+        if (shellEnabled) return; 
+        const row = e.target.closest('.filter-row'); 
+        if (row) { 
+            const lineIndex = parseInt(row.dataset.lineIndex); 
+            if (!isNaN(lineIndex)) jumpToLine(lineIndex, 'main'); 
+        } 
+    });
+}
+
+function setupSpecificLogFilter(tabId) {
+    const panel = document.getElementById(`${tabId}_filter_panel`);
+    const input = document.getElementById(`${tabId}_filter_input`);
+    const toggleBtn = document.getElementById(`${tabId}_filter_toggle`);
+    const clearBtn = document.getElementById(`${tabId}_filter_clear`);
+    const outputEl = document.getElementById(`${tabId}_filter_output`);
+    const mainToggleBtn = panel.querySelector('.toggle-panel-btn');
+    const handle = panel.querySelector('.filter-resize-handle');
+    
+    let isEnabled = false;
+    let regex = null;
+    
+    // Toggle Visibility
+    mainToggleBtn.addEventListener('click', () => {
+        panel.classList.toggle('collapsed');
+        const arrow = panel.classList.contains('collapsed') ? '▼' : '▲';
+        mainToggleBtn.textContent = `${arrow} Filter`;
+    });
+
+    // Resize
+    let isResizing = false;
+    handle.addEventListener('mousedown', (e) => { e.preventDefault(); isResizing = true; document.body.style.cursor = 'ns-resize'; document.body.style.userSelect = 'none'; panel.style.transition = 'none'; panel.classList.remove('collapsed'); mainToggleBtn.textContent = '▲ Filter'; });
+    document.addEventListener('mousemove', (e) => { if (!isResizing) return; const rect = panel.parentElement.getBoundingClientRect(); let h = rect.bottom - e.clientY; h = Math.max(100, Math.min(h, 600)); panel.style.height = `${h}px`; });
+    document.addEventListener('mouseup', () => { if (isResizing) { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; panel.style.transition = ''; } });
+
+    // Logic
+    input.addEventListener('input', (e) => {
+        const pattern = e.target.value.trim();
+        try { regex = new RegExp(pattern, 'gi'); input.style.borderColor = pattern ? 'var(--accent-color)' : 'var(--border-color)'; } 
+        catch (e) { regex = null; input.style.borderColor = 'var(--danger-color)'; }
+        if (isEnabled) runFullLogFilter(regex, outputEl, tabId);
+    });
+
+    toggleBtn.addEventListener('click', (e) => {
+        isEnabled = !isEnabled;
+        toggleBtn.textContent = isEnabled ? 'ON' : 'OFF';
+        toggleBtn.style.backgroundColor = isEnabled ? 'var(--success-color)' : '';
+        if (isEnabled) runFullLogFilter(regex, outputEl, tabId);
+    });
+
+    clearBtn.addEventListener('click', () => { outputEl.innerHTML = ''; });
+    
+    outputEl.addEventListener('click', (e) => {
+        const row = e.target.closest('.filter-row');
+        if (row) {
+            const lineIndex = parseInt(row.dataset.lineIndex);
+            if (!isNaN(lineIndex)) jumpToLine(lineIndex, tabId);
+        }
+    });
+}
+
+function runFullLogFilter(regex, outputEl, tabId) {
+    outputEl.innerHTML = '';
+    if (!regex) return;
+    
+    const tabData = logTabs[tabId];
+    if (!tabData) return;
+
+    tabData.messages.forEach((msg, index) => {
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = ansiToHtml(msg);
+        const text = tempDiv.textContent || tempDiv.innerText || '';
+        if (regex.test(text)) {
+            appendToSpecificFilterOutput(text, index + tabData.trimOffset, outputEl, tabId);
+            regex.lastIndex = 0;
+        }
+    });
+}
+
+function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType) {
+    const div = document.createElement('div');
+    div.className = 'filter-row';
+    div.dataset.lineIndex = lineIndex;
+    
+    // Use ansiToHtml and applyHighlight for consistency
+    div.innerHTML = applyHighlight(ansiToHtml(text));
+    
+    outputEl.appendChild(div);
+    
+    if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) {
+        outputEl.scrollTop = outputEl.scrollHeight;
+    }
+    
+    while (outputEl.children.length > 1000) { outputEl.removeChild(outputEl.firstChild); }
+}
+
+function jumpToLine(index, type) {
+    let output, trimOffset;
+    
+    if (type.startsWith('log_')) {
+        output = document.getElementById(`${type}_output`);
+        trimOffset = logTabs[type].trimOffset;
+    } else {
+        output = document.getElementById('output');
+        trimOffset = outputTrimOffset;
+    }
+    
+    const realIndex = index - trimOffset;
+    if (realIndex >= 0 && realIndex < output.children.length) {
+        const target = output.children[realIndex];
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('flash-highlight');
+        setTimeout(() => target.classList.remove('flash-highlight'), 1000);
+    }
+}
+
+function ansiToHtml(text) {
+    const ansiRegex = /\x1b\[([0-9;]*)m/g;
+    let match;
+    let lastIndex = 0;
+    let html = '';
+    const openTags = [];
+    const colors = [ '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff' ];
+
+    while ((match = ansiRegex.exec(text)) !== null) {
+        html += text.substring(lastIndex, match.index);
+        lastIndex = match.index + match[0].length;
+        const codes = match[1].split(';').map(Number).filter(n => !isNaN(n));
+        if (codes.length === 0) { while(openTags.length) { html += '</span>'; openTags.pop(); } continue; }
+        let style = '';
+        for(let i = 0; i < codes.length; i++) {
+            const code = codes[i];
+            if (code === 0) { style = ''; while(openTags.length) { html += '</span>'; openTags.pop(); } }
+            else if (code === 1) { style += 'font-weight:bold;'; }
+            else if (code >= 30 && code <= 37) { style += `color:${colors[code-30]};`; }
+            else if (code >= 90 && code <= 97) { style += `color:${colors[code-90+8]};`; }
+            else if (code === 38) { if (codes[i+1] === 5) { const c = codes[i+2]; if (c < 16) style += `color:${colors[c]};`; i += 2; } else if (codes[i+1] === 2) { style += `color:rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]});`; i += 4; } }
+        }
+        if (style) { html += `<span style="${style}">`; openTags.push(true); }
+    }
+    html += text.substring(lastIndex);
+    while(openTags.length) { html += '</span>'; openTags.pop(); }
+    return html;
+}
+
+function runFullFilter() {
+    filterOutput.innerHTML = '';
+    if (!filterRegex) return;
+    if (shellEnabled && term) {
+        const buffer = term.buffer.active;
+        for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { const text = line.translateToString(true); if (filterRegex.test(text)) { appendToSpecificFilterOutput(text, i, filterOutput, 'main'); filterRegex.lastIndex = 0; } } }
+    } else {
+        outputMessages.forEach((msg, index) => { const tempDiv = document.createElement('div'); tempDiv.innerHTML = msg; const text = tempDiv.textContent || tempDiv.innerText || ''; if (filterRegex.test(text)) { appendToSpecificFilterOutput(text, index + outputTrimOffset, filterOutput, 'main'); filterRegex.lastIndex = 0; } });
+    }
+}
+
+// ================= TIME GUTTER ================= 
 class TimeGutter { 
-    constructor(element) { 
-        this.el = element; 
-        this.markers = []; 
-        this.lineTimestamps = []; 
-        this.cellHeight = 0; 
-        this.term = null; 
-        this.viewport = null; 
-        this.renderPending = false; 
-    } 
-
-    bindTerminal(term) { 
-        this.term = term; 
-        this.viewport = term.element.querySelector('.xterm-viewport'); 
-        if (!this.viewport) return; 
-        this.tryGetCellHeight(); 
-        this.syncFont(); 
-
-        // 1. Listen for new lines to generate timestamps 
-        term.onLineFeed(() => { 
-            if (isImporting) return; // 如果是导入的日志，不自动生成时间戳，交给 handleImportLog 处理
-
-            const buffer = this.term.buffer.active; 
-            const completedIndex = buffer.baseY + buffer.cursorY - 1; 
-            if (completedIndex < 0) return; 
-
-            let logicalStart = completedIndex; 
-            while (logicalStart > 0) { 
-                const line = buffer.getLine(logicalStart); 
-                if (line && line.isWrapped) { 
-                    logicalStart--; 
-                } else { 
-                    break; 
-                } 
-            } 
-
-            const startLine = buffer.getLine(logicalStart); 
-            if (startLine && !startLine.isWrapped) { 
-                const now = new Date(); 
-                const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}.${now.getMilliseconds().toString().padStart(3,'0')}`; 
-                const offset = logicalStart - (buffer.baseY + buffer.cursorY); 
-                let marker = null; 
-                
-                try { 
-                    if (typeof this.term.registerMarker === 'function') { 
-                        marker = this.term.registerMarker(offset); 
-                    } else if (typeof this.term.addMarker === 'function') { 
-                        marker = this.term.addMarker(offset); 
-                    } 
-                } catch(e) { 
-                    console.error("Marker creation failed, falling back to array:", e); 
-                } 
-                
-                if (marker) { 
-                    this.markers.push({ marker, ts }); 
-                    marker.onDispose(() => { 
-                        this.markers = this.markers.filter(m => m.marker !== marker); 
-                        this.scheduleRender(); 
-                    }); 
-                } else { 
-                    while (this.lineTimestamps.length <= logicalStart) { 
-                        this.lineTimestamps.push(''); 
-                    } 
-                    this.lineTimestamps[logicalStart] = ts; 
-                } 
-            } 
-            this.scheduleRender(); 
-        }); 
-
-        // 2. Core Sync: Listen to Xterm's native smooth scroll 
-        this.viewport.addEventListener('scroll', () => this.scheduleRender()); 
-
-        // 3. Resize requires recalculation 
-        term.onResize(() => { 
-            this.tryGetCellHeight(); 
-            this.syncFont(); 
-            this.scheduleRender(); 
-        }); 
-    } 
-
-    syncFont() { 
-        const userFont = document.getElementById('font-input').value; 
-        this.el.style.fontFamily = getFullFontStack(userFont); 
-    } 
-
-    tryGetCellHeight() { 
-        if (!this.term || !this.term.element) return; 
-        try { 
-            this.cellHeight = this.term._core._renderService.dimensions.actualCellHeight; 
-        } catch(e) {} 
-        if (!this.cellHeight || this.cellHeight <= 0) { 
-            const row = this.term.element.querySelector('.xterm-rows > div'); 
-            if (row) this.cellHeight = row.getBoundingClientRect().height; 
-        } 
-        if (!this.cellHeight || this.cellHeight <= 0) { 
-            setTimeout(() => this.tryGetCellHeight(), 100); 
-        } 
-    } 
-
-    reset() { 
-        this.markers.forEach(m => { 
-            try { m.marker.dispose(); } catch(e) {} 
-        }); 
-        this.markers = []; 
-        this.lineTimestamps = []; 
-        this.el.innerHTML = ''; 
-    } 
-
-    scheduleRender() { 
-        if (!this.renderPending) { 
-            this.renderPending = true; 
-            requestAnimationFrame(() => { 
-                this.render(); 
-                this.renderPending = false; 
-            }); 
-        } 
-    } 
-
-    render() { 
-        if (!this.term || !this.cellHeight || !this.viewport) return; 
-        const buffer = this.term.buffer.active; 
-        const bufferLength = buffer.length; 
-
-        const scrollTop = this.viewport.scrollTop; 
-        const viewportHeight = this.viewport.clientHeight; 
-
-        let startRow = Math.floor(scrollTop / this.cellHeight) - 2; 
-        let endRow = Math.ceil((scrollTop + viewportHeight) / this.cellHeight) + 2; 
-        startRow = Math.max(0, startRow); 
-        
-        let html = ''; 
-        
-        if (this.markers.length > 0) { 
-            this.markers.forEach(m => { 
-                if (!m.marker.isDisposed) { 
-                    const line = m.marker.line; 
-                    if (line !== undefined && line !== null && line >= startRow && line <= endRow) { 
-                        const top = (line * this.cellHeight) - scrollTop; 
-                        html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">${m.ts}</div>`; 
-                    } 
-                } 
-            }); 
-        } else { 
-            while (this.lineTimestamps.length > bufferLength) { this.lineTimestamps.shift(); } 
-            while (this.lineTimestamps.length < bufferLength) { this.lineTimestamps.push(''); } 
-            for (let i = startRow; i < endRow; i++) { 
-                const ts = this.lineTimestamps[i]; 
-                if (ts) { 
-                    const top = (i * this.cellHeight) - scrollTop; 
-                    html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">${ts}</div>`; 
-                } 
-            } 
-        } 
-        
-        this.el.innerHTML = html; 
-    } 
+    constructor(element) { this.el = element; this.markers = []; this.lineTimestamps = []; this.cellHeight = 0; this.term = null; this.viewport = null; this.renderPending = false; } 
+    bindTerminal(term) { this.term = term; this.viewport = term.element.querySelector('.xterm-viewport'); if (!this.viewport) return; this.tryGetCellHeight(); this.syncFont(); term.onLineFeed(() => { const buffer = this.term.buffer.active; const completedIndex = buffer.baseY + buffer.cursorY - 1; if (completedIndex < 0) return; let logicalStart = completedIndex; while (logicalStart > 0) { const line = buffer.getLine(logicalStart); if (line && line.isWrapped) { logicalStart--; } else { break; } } const startLine = buffer.getLine(logicalStart); if (startLine && !startLine.isWrapped) { const now = new Date(); const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}.${now.getMilliseconds().toString().padStart(3,'0')}`; const offset = logicalStart - (buffer.baseY + buffer.cursorY); let marker = null; try { if (typeof this.term.registerMarker === 'function') { marker = this.term.registerMarker(offset); } else if (typeof this.term.addMarker === 'function') { marker = this.term.addMarker(offset); } } catch(e) {} if (marker) { this.markers.push({ marker, ts }); marker.onDispose(() => { this.markers = this.markers.filter(m => m.marker !== marker); this.scheduleRender(); }); } else { while (this.lineTimestamps.length <= logicalStart) { this.lineTimestamps.push(''); } this.lineTimestamps[logicalStart] = ts; } } this.scheduleRender(); }); this.viewport.addEventListener('scroll', () => this.scheduleRender()); term.onResize(() => { this.tryGetCellHeight(); this.syncFont(); this.scheduleRender(); }); } 
+    syncFont() { const userFont = document.getElementById('font-input').value; this.el.style.fontFamily = getFullFontStack(userFont); } 
+    tryGetCellHeight() { if (!this.term || !this.term.element) return; try { this.cellHeight = this.term._core._renderService.dimensions.actualCellHeight; } catch(e) {} if (!this.cellHeight || this.cellHeight <= 0) { const row = this.term.element.querySelector('.xterm-rows > div'); if (row) this.cellHeight = row.getBoundingClientRect().height; } if (!this.cellHeight || this.cellHeight <= 0) { setTimeout(() => this.tryGetCellHeight(), 100); } } 
+    reset() { this.markers.forEach(m => { try { m.marker.dispose(); } catch(e) {} }); this.markers = []; this.lineTimestamps = []; this.el.innerHTML = ''; } 
+    scheduleRender() { if (!this.renderPending) { this.renderPending = true; requestAnimationFrame(() => { this.render(); this.renderPending = false; }); } } 
+    render() { if (!this.term || !this.cellHeight || !this.viewport) return; const buffer = this.term.buffer.active; const bufferLength = buffer.length; const scrollTop = this.viewport.scrollTop; const viewportHeight = this.viewport.clientHeight; let startRow = Math.floor(scrollTop / this.cellHeight) - 2; let endRow = Math.ceil((scrollTop + viewportHeight) / this.cellHeight) + 2; startRow = Math.max(0, startRow); let html = ''; if (this.markers.length > 0) { this.markers.forEach(m => { if (!m.marker.isDisposed) { const line = m.marker.line; if (line !== undefined && line !== null && line >= startRow && line <= endRow) { const top = (line * this.cellHeight) - scrollTop; html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">${m.ts}</div>`; } } }); } else { while (this.lineTimestamps.length > bufferLength) { this.lineTimestamps.shift(); } while (this.lineTimestamps.length < bufferLength) { this.lineTimestamps.push(''); } for (let i = startRow; i < endRow; i++) { const ts = this.lineTimestamps[i]; if (ts) { const top = (i * this.cellHeight) - scrollTop; html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">${ts}</div>`; } } } this.el.innerHTML = html; } 
 } 
 
 // ================= CORE LOGIC ================= 
-function getFullFontStack(userFont) { 
-    if (!userFont || userFont.trim() === '') { return DEFAULT_FONT_STACK; } 
-    return `${userFont}, ${DEFAULT_FONT_STACK}`; 
-} 
+function getFullFontStack(userFont) { if (!userFont || userFont.trim() === '') { return DEFAULT_FONT_STACK; } return `${userFont}, ${DEFAULT_FONT_STACK}`; } 
 
 function syncShellUI(enabled) { 
     if (enabled) { 
         outputContainer.style.display = 'none'; 
         shellArea.style.display = 'flex'; 
-        inputArea.style.display = 'none'; 
+        inputArea.style.display = 'none'; // Hide Send panel when Shell ON
         updateGutterVisibility(); 
     } else { 
         outputContainer.style.display = 'flex'; 
         shellArea.style.display = 'none'; 
-        inputArea.style.display = 'flex'; 
+        inputArea.style.display = 'flex'; // Show Send panel when Shell OFF
     } 
 } 
 
-function updateGutterVisibility() { 
-    if (!timeGutterEl) return; 
-    timeGutterEl.style.display = (shellEnabled && timestampEnabled) ? 'block' : 'none'; 
-    setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); 
-} 
+function updateGutterVisibility() { if (!timeGutterEl) return; timeGutterEl.style.display = (shellEnabled && timestampEnabled) ? 'block' : 'none'; setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } 
 
 function initWebSocket() { 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; 
@@ -258,16 +434,13 @@ function initWebSocket() {
                     if (shellEnabled) { 
                         if (term) { 
                             let msg = data.message.replace(/\r?\n/g, '\r\n'); 
+                            checkAndFilter(data.message.replace(/\r?\n/g, ''), term.buffer.active.baseY + term.buffer.active.cursorY); 
                             term.write(applyShellHighlight(msg)); 
                         } else addToOutput(data.message); 
                     } else { addToOutput(data.message); } 
                     break; 
                 case 'script_log': appendToScriptConsole(data.message); break; 
-                case 'config': 
-                    if (data.config) updateConfig(data.config); 
-                    if (data.connected !== undefined) updateConnectionStatus(data.connected); 
-                    if (data.mode) updateMode(data.mode); 
-                    break; 
+                case 'config': if (data.config) updateConfig(data.config); if (data.connected !== undefined) updateConnectionStatus(data.connected); if (data.mode) updateMode(data.mode); break; 
                 case 'status': console.log('Status:', data.message); break; 
                 case 'mode': updateMode(data.mode); break; 
                 case 'clear': clearOutput(false); break; 
@@ -278,14 +451,21 @@ function initWebSocket() {
     ws.onerror = (error) => console.error('WS error:', error); 
 } 
 
-function setupSidebarFocusManagement() { 
-    document.querySelectorAll('#sidebar input, #sidebar select, #sidebar textarea').forEach(el => { 
-        el.addEventListener('mousedown', function(e) { if (term) term.blur(); }); 
-        el.addEventListener('focus', function() { if (term) term.blur(); }); 
-    }); 
-} 
+function setupSidebarFocusManagement() { document.querySelectorAll('#sidebar input, #sidebar select, #sidebar textarea').forEach(el => { el.addEventListener('mousedown', function(e) { if (term) term.blur(); }); el.addEventListener('focus', function() { if (term) term.blur(); }); }); } 
 
 function setupEventListeners() { 
+    // Tab Bar Delegate
+    document.getElementById('tab-bar').addEventListener('click', (e) => {
+        const tab = e.target.closest('.tab');
+        if (tab) {
+            if (e.target.classList.contains('tab-close')) {
+                closeLogTab(tab.dataset.tab);
+            } else {
+                switchTab(tab.dataset.tab);
+            }
+        }
+    });
+
     document.getElementById('connect-btn').addEventListener('click', toggleConnection); 
     document.getElementById('scan-btn').addEventListener('click', scanPorts); 
     document.getElementById('clear-btn').addEventListener('click', () => clearOutput(true)); 
@@ -293,266 +473,186 @@ function setupEventListeners() {
     document.getElementById('send-btn').addEventListener('click', sendData); 
     document.getElementById('save-config-btn').addEventListener('click', saveConfig); 
     document.getElementById('input').addEventListener('keydown', handleInputKeydown); 
-    document.getElementById('toggle-sidebar-btn').addEventListener('click', () => { 
-        document.getElementById('sidebar').classList.toggle('collapsed'); 
-        setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); 
-    }); 
-    document.getElementById('toggle-input-btn').addEventListener('click', () => { inputArea.classList.toggle('collapsed'); }); 
-    document.getElementById('toggle-script-btn').addEventListener('click', () => { 
-        const panel = document.getElementById('script-panel'); 
-        panel.classList.toggle('collapsed'); 
-        setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); 
-    }); 
-    document.getElementById('refresh-scripts-btn').addEventListener('click', listScripts); 
-    document.getElementById('run-script-btn').addEventListener('click', runScript); 
-    document.getElementById('stop-script-btn').addEventListener('click', stopScript); 
-    document.getElementById('ascii-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); 
-    document.getElementById('hex-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); 
-    document.getElementById('timestamp-on').addEventListener('change', function() { if (this.checked) setTimestamp(true); }); 
-    document.getElementById('timestamp-off').addEventListener('change', function() { if (this.checked) setTimestamp(false); }); 
-    document.getElementById('shell-on').addEventListener('change', function() { if (this.checked) setShellEnabled(true); }); 
-    document.getElementById('shell-off').addEventListener('change', function() { if (this.checked) setShellEnabled(false); }); 
-    document.getElementById('theme-preset-select').addEventListener('change', handleThemePresetChange); 
-    document.getElementById('theme-bg').addEventListener('input', handleCustomThemeChange); 
-    document.getElementById('theme-fg').addEventListener('input', handleCustomThemeChange); 
-    document.getElementById('theme-cursor').addEventListener('input', handleCustomThemeChange); 
-    document.querySelector('.close').addEventListener('click', closeModal); 
-    window.addEventListener('click', (event) => { if (event.target == document.getElementById('modal')) closeModal(); }); 
-
-    // 导入日志功能绑定
-    document.getElementById('import-log-btn').addEventListener('click', () => {
-        document.getElementById('import-log-input').click();
+    document.getElementById('toggle-sidebar-btn').addEventListener('click', () => { document.getElementById('sidebar').classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); 
+    
+    // Input Area Toggle
+    document.getElementById('send-toggle-btn').addEventListener('click', function() {
+        const area = document.getElementById('input-area');
+        area.classList.toggle('collapsed');
+        this.textContent = area.classList.contains('collapsed') ? '▼ Send' : '▲ Send';
     });
-    document.getElementById('import-log-input').addEventListener('change', function(e) {
-        if (this.files.length > 0) {
-            handleImportLog(this.files[0]);
-            this.value = ''; // 允许再次导入同一个文件
+
+    document.getElementById('toggle-script-btn').addEventListener('click', () => { const panel = document.getElementById('script-panel'); panel.classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); 
+    document.getElementById('refresh-scripts-btn').addEventListener('click', listScripts); document.getElementById('run-script-btn').addEventListener('click', runScript); document.getElementById('stop-script-btn').addEventListener('click', stopScript); 
+    document.getElementById('ascii-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('hex-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); 
+    document.getElementById('timestamp-on').addEventListener('change', function() { if (this.checked) setTimestamp(true); }); document.getElementById('timestamp-off').addEventListener('change', function() { if (this.checked) setTimestamp(false); }); 
+    document.getElementById('shell-on').addEventListener('change', function() { if (this.checked) setShellEnabled(true); }); document.getElementById('shell-off').addEventListener('change', function() { if (this.checked) setShellEnabled(false); }); 
+    document.getElementById('theme-preset-select').addEventListener('change', handleThemePresetChange); document.getElementById('theme-bg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-fg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-cursor').addEventListener('input', handleCustomThemeChange); 
+    document.querySelector('.close').addEventListener('click', closeModal); window.addEventListener('click', (event) => { if (event.target == document.getElementById('modal')) closeModal(); }); 
+    document.getElementById('import-log-btn').addEventListener('click', () => { document.getElementById('import-log-input').click(); }); 
+    document.getElementById('import-log-input').addEventListener('change', function(e) { if (this.files.length > 0) { handleImportLog(this.files[0]); this.value = ''; } }); 
+} 
+
+function handleImportLog(file) {
+    if (!file) return;
+    const tabId = createLogTab(file.name);
+    const tabData = logTabs[tabId];
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        const text = e.target.result;
+        const lines = text.split('\n');
+        const tsRegex = /^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s(.*)$/;
+        
+        let i = 0;
+        const outputEl = document.getElementById(`${tabId}_output`);
+        
+        function processChunk() {
+            const chunk = lines.slice(i, i + 500);
+            chunk.forEach(line => {
+                const match = line.match(tsRegex);
+                let content = line.replace(/\r$/, '');
+                if (match) content = match[2];
+                tabData.messages.push(content);
+                
+                const div = document.createElement('div');
+                div.innerHTML = applyHighlight(ansiToHtml(content));
+                outputEl.appendChild(div);
+            });
+            
+            outputEl.scrollTop = outputEl.scrollHeight;
+            
+            i += 500;
+            if (i < lines.length) setTimeout(processChunk, 5);
+        }
+        processChunk();
+    };
+    reader.readAsText(file);
+}
+
+function addToOutput(text) { 
+    outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); 
+    const tempDiv = document.createElement('div'); tempDiv.innerHTML = text; 
+    checkAndFilter(tempDiv.textContent || tempDiv.innerText || '', outputMessages.length - 1 + outputTrimOffset); 
+} 
+
+function scheduleOutputUpdate() { if (!updateTimer) updateTimer = setTimeout(flushOutput, 16); } 
+
+function flushOutput() { 
+    updateTimer = null; if (pendingMessages.length === 0) return; 
+    const output = document.getElementById('output'); 
+    const fragment = document.createDocumentFragment(); 
+    const batch = pendingMessages.splice(0, FLUSH_BATCH_SIZE); 
+    batch.forEach(msg => { const div = document.createElement('div'); div.innerHTML = applyHighlight(ansiToHtml(msg)); fragment.appendChild(div); }); 
+    output.appendChild(fragment); 
+    
+    while (output.children.length > MAX_OUTPUT_LINES) { output.removeChild(output.firstChild); outputMessages.shift(); outputTrimOffset++; }
+    
+    output.scrollTop = output.scrollHeight; 
+    if (pendingMessages.length > 0) scheduleOutputUpdate(); 
+} 
+
+function checkAndFilter(text, index) { if (!isFilterEnabled || !filterRegex) return; if (filterRegex.test(text)) { appendToSpecificFilterOutput(text, index, filterOutput, 'main'); } }
+
+// ================= UTILITY & CONFIG ================= 
+
+function applyFontSettings(font, size) { 
+    const output = document.getElementById('output');
+    const fullFont = getFullFontStack(font); 
+    
+    // Apply to main output
+    output.style.fontFamily = fullFont;
+    output.style.fontSize = size + 'px';
+
+    // Apply to main filter output
+    const mainFilterOutput = document.getElementById('filter-output');
+    if(mainFilterOutput) {
+        mainFilterOutput.style.fontFamily = fullFont;
+        mainFilterOutput.style.fontSize = size + 'px';
+    }
+
+    // Apply to all Log tabs
+    Object.keys(logTabs).forEach(tabId => {
+        const logOutput = document.getElementById(`${tabId}_output`);
+        const logFilterOutput = document.getElementById(`${tabId}_filter_output`);
+        if(logOutput) {
+            logOutput.style.fontFamily = fullFont;
+            logOutput.style.fontSize = size + 'px';
+        }
+        if(logFilterOutput) {
+            logFilterOutput.style.fontFamily = fullFont;
+            logFilterOutput.style.fontSize = size + 'px';
         }
     });
+
+    // Apply to Xterm
+    if (term) {
+        term.setOption('fontFamily', fullFont);
+        term.setOption('fontSize', parseInt(size));
+        setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50);
+    }
+    if (timeGutter) timeGutter.syncFont(); 
 } 
 
-function setupSmartCopy() { 
-    const output = document.getElementById('output'); 
-    output.addEventListener('keydown', function(e) { 
-        if (e.key === 'Enter') { 
-            const selection = window.getSelection().toString(); 
-            if (selection) { 
-                e.preventDefault(); 
-                navigator.clipboard.writeText(selection).catch(err => {}); 
-            } 
-        } 
-    }); 
-} 
+function updatePortInfo(port, baud) { document.getElementById('port-info').textContent = `${port} | ${baud}`; } 
+
+function loadConfig() { fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => { updateConfig(data.config, true); updateConnectionStatus(data.connected); updateMode(data.mode); if (data.config && data.config.UI) { setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false); } else { setShellEnabled(true, false); } requestAnimationFrame(() => { requestAnimationFrame(() => { fetch('/ready', { method: 'POST' }); }); }); }).catch(err => { console.error('Config load failed:', err); fetch('/ready', { method: 'POST' }); }); } 
+
+function updateConfig(config, isInitial = false) { if (!config) return; if (config.Serial) { document.getElementById('port-input').value = config.Serial.Port || 'COM1'; document.getElementById('baud-input').value = config.Serial.Baud || 9600; document.getElementById('databits-select').value = config.Serial.Databits || 8; document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1; document.getElementById('parity-select').value = config.Serial.Parity || 'N'; updatePortInfo(config.Serial.Port, config.Serial.Baud); } if (config.UI) { document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace'; document.getElementById('fontsize-input').value = config.UI.FontSize || 14; document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000; applyFontSettings(config.UI.Font, config.UI.FontSize); updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true); if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true); } if (config.Highlight && config.Highlight.Groups) { const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : ["error:#ff0000", "warn:#ffa500"]; document.getElementById('highlight-input').value = groups.join('\n'); updateHighlightRules(groups); } if (config.Theme) { const name = config.Theme.Name || "Default"; document.getElementById('theme-preset-select').value = name; if (name === "Custom") { document.getElementById('custom-theme-area').style.display = 'flex'; document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e'; document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc'; document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff'; applyTheme(config.Theme); } else { document.getElementById('custom-theme-area').style.display = 'none'; applyTheme(themePresets[name]); } } } 
 
 function addConfigChangeListeners() { 
-    ['port-input', 'baud-input', 'databits-select', 'stopbits-select', 'parity-select', 'font-input', 'fontsize-input', 'highlight-input', 'scrollback-input'].forEach(id => { 
-        document.getElementById(id).addEventListener('change', saveConfigSilently); 
-    }); 
+    ['port-input', 'baud-input', 'databits-select', 'stopbits-select', 'parity-select', 'font-input', 'fontsize-input', 'highlight-input', 'scrollback-input'].forEach(id => { document.getElementById(id).addEventListener('change', saveConfigSilently); }); 
     document.getElementById('port-input').addEventListener('input', function() { updatePortInfo(this.value, document.getElementById('baud-input').value); }); 
     document.getElementById('port-input').addEventListener('change', function() { updatePortInfo(this.value, document.getElementById('baud-input').value); }); 
     document.getElementById('baud-input').addEventListener('change', function() { updatePortInfo(document.getElementById('port-input').value, this.value); }); 
     document.getElementById('font-input').addEventListener('change', function() { applyFontSettings(this.value, document.getElementById('fontsize-input').value); }); 
     document.getElementById('fontsize-input').addEventListener('change', function() { applyFontSettings(document.getElementById('font-input').value, this.value); }); 
-    document.getElementById('scrollback-input').addEventListener('change', function() { 
-        if (shellEnabled && term) { 
-            setShellEnabled(false, false); 
-            setTimeout(() => setShellEnabled(true, false), 100); 
-        } 
-    }); 
-    document.getElementById('highlight-input').addEventListener('change', function() { 
-        updateHighlightRules(this.value.split('\n').map(l => l.trim()).filter(l => l)); 
-        rerenderAllOutput(); 
-    }); 
+    document.getElementById('scrollback-input').addEventListener('change', function() { if (shellEnabled && term) { setShellEnabled(false, false); setTimeout(() => setShellEnabled(true, false), 100); } }); 
+    document.getElementById('highlight-input').addEventListener('change', function() { updateHighlightRules(this.value.split('\n').map(l => l.trim()).filter(l => l)); rerenderAllOutput(); if(isFilterEnabled) runFullFilter(); }); 
 } 
 
-function setupKeyboardShortcuts() { 
-    document.addEventListener('keydown', function(event) { 
-        if (event.target.tagName === 'INPUT' && event.target.id !== 'input') return; 
-        if (event.key === 'F2') { event.preventDefault(); toggleConnection(); } 
-        else if (event.key === 'F3') { event.preventDefault(); scanPorts(); } 
-        else if (event.key === 'Escape') { event.preventDefault(); closeModal(); } 
-    }); 
-} 
+function saveConfig() { fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }).then(r => r.json()).then(data => { if (data.status === 'ok') alert('Configuration saved'); else alert('Save failed: ' + data.message); }); } 
+function saveConfigSilently() { fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }); } 
+function getFormData() { const themeName = document.getElementById('theme-preset-select').value; let themeData = { Name: themeName }; if (themeName === "Custom") { themeData.Background = document.getElementById('theme-bg').value; themeData.Foreground = document.getElementById('theme-fg').value; themeData.Cursor = document.getElementById('theme-cursor').value; Object.assign(themeData, themePresets["Default"]); } else { const preset = themePresets[themeName]; if(preset) Object.assign(themeData, preset); } return { Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value }, UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled, Scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000 }, Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) }, Log: { Path: './logs' }, Theme: themeData }; } 
 
-// ================= THEME LOGIC ================= 
-function adjustColor(hex, amount) { 
-    hex = hex.replace('#', ''); 
-    let r = parseInt(hex.substring(0, 2), 16); 
-    let g = parseInt(hex.substring(2, 4), 16); 
-    let b = parseInt(hex.substring(4, 6), 16); 
-    r = Math.min(255, Math.max(0, r + amount)); 
-    g = Math.min(255, Math.max(0, g + amount)); 
-    b = Math.min(255, Math.max(0, b + amount)); 
-    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`; 
-} 
+// ================= REST OF HELPER FUNCTIONS =================
+// (Including setupSmartCopy, setupKeyboardShortcuts, adjustColor, applyTheme, handleThemePresetChange, handleCustomThemeChange, listScripts, runScript, stopScript, appendToScriptConsole, toggleConnection, connect, disconnect, scanPorts, setMode, setTimestamp, setShellEnabled, initTerminal, hexToAnsi, updateHighlightRules, applyShellHighlight, applyHighlight, addToHistory, navigateHistory, sendData, handleInputKeydown, exportLog, rerenderAllOutput, clearOutput, updateConnectionStatus, updateMode, updateTimestampStatus, updateShellStatus, showPortSelection, showPortSelectionError, closeModal)
 
-function applyTheme(themeData) { 
-    if (!themeData) return; 
-    const root = document.documentElement; 
-    const bgLuminance = parseInt(themeData.Background.substring(1, 3), 16) + parseInt(themeData.Background.substring(3, 5), 16) + parseInt(themeData.Background.substring(5, 7), 16); 
-    const isDark = bgLuminance < 384; 
-    const step = isDark ? 15 : -15; 
-    root.style.setProperty('--bg-primary', themeData.Background); 
-    root.style.setProperty('--bg-secondary', adjustColor(themeData.Background, step)); 
-    root.style.setProperty('--bg-tertiary', adjustColor(themeData.Background, step * 2)); 
-    root.style.setProperty('--border-color', adjustColor(themeData.Background, step * 3)); 
-    root.style.setProperty('--text-primary', themeData.Foreground); 
-    root.style.setProperty('--text-secondary', adjustColor(themeData.Foreground, isDark ? -80 : 80)); 
-    root.style.setProperty('--accent-color', themeData.Blue); 
-    root.style.setProperty('--accent-hover', adjustColor(themeData.Blue, isDark ? 30 : -30)); 
-    root.style.setProperty('--danger-color', themeData.Red); 
-    root.style.setProperty('--success-color', themeData.Green); 
-    root.style.setProperty('--warning-color', themeData.Yellow); 
-    if (term) { 
-        term.setOption('theme', { 
-            background: themeData.Background, foreground: themeData.Foreground, cursor: themeData.Cursor, selectionBackground: themeData.Cursor + '40', 
-            black: themeData.Black, red: themeData.Red, green: themeData.Green, yellow: themeData.Yellow, blue: themeData.Blue, magenta: themeData.Magenta, cyan: themeData.Cyan, white: themeData.White, brightBlack: themeData.BrightBlack, brightRed: themeData.BrightRed, brightGreen: themeData.BrightGreen, brightYellow: themeData.BrightYellow, brightBlue: themeData.BrightBlue, brightMagenta: themeData.BrightMagenta, brightCyan: themeData.BrightCyan, brightWhite: themeData.BrightWhite 
-        }); 
-    } 
-} 
-
-function handleThemePresetChange() { 
-    const sel = document.getElementById('theme-preset-select'); 
-    const customArea = document.getElementById('custom-theme-area'); 
-    const name = sel.value; 
-    if (name === "Custom") { customArea.style.display = 'flex'; handleCustomThemeChange(); } 
-    else { customArea.style.display = 'none'; applyTheme(themePresets[name]); saveConfigSilently(); } 
-} 
-
-function handleCustomThemeChange() { 
-    applyTheme({ 
-        Name: "Custom", Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] 
-    }); 
-    saveConfigSilently(); 
-} 
-
-// ================= SCRIPT LOGIC ================= 
-function listScripts() { 
-    fetch('/listscripts', { method: 'POST' }).then(r => r.json()).then(data => { 
-        if (data.status === 'ok') { 
-            const select = document.getElementById('script-select'); 
-            select.innerHTML = '<option value="">-- Select Script --</option>'; 
-            data.scripts.forEach(s => { 
-                const opt = document.createElement('option'); opt.value = s; opt.textContent = s; select.appendChild(opt); 
-            }); 
-        } 
-    }); 
-} 
-
-function runScript() { 
-    const filename = document.getElementById('script-select').value; 
-    if (!filename) return alert("Please select a script first."); 
-    isScriptRunning = true; 
-    document.getElementById('script-status-text').textContent = 'Running...'; 
-    document.getElementById('script-status-text').style.color = 'var(--success-color)'; 
-    document.getElementById('script-console').innerHTML = ''; 
-    const formData = new FormData(); 
-    formData.append('filename', filename); 
-    fetch('/runscript', { method: 'POST', body: formData }).then(r => r.json()).then(data => { 
-        if (data.status !== 'ok') { 
-            appendToScriptConsole("❌ Failed to start: " + data.message); 
-            isScriptRunning = false; 
-            document.getElementById('script-status-text').textContent = 'Error'; 
-            document.getElementById('script-status-text').style.color = 'var(--danger-color)'; 
-        } else { appendToScriptConsole(`🚀 Executing: ${filename}`); } 
-    }); 
-} 
-
-function stopScript() { 
-    fetch('/stopscript', { method: 'POST' }).then(r => r.json()).then(data => { 
-        if (data.status === 'ok') { 
-            isScriptRunning = false; 
-            document.getElementById('script-status-text').textContent = 'Stopped'; 
-            document.getElementById('script-status-text').style.color = 'var(--warning-color)'; 
-        } 
-    }); 
-} 
-
-function appendToScriptConsole(msg) { 
-    const con = document.getElementById('script-console'); 
-    const div = document.createElement('div'); div.textContent = msg; 
-    con.appendChild(div); con.scrollTop = con.scrollHeight; 
-    if (msg.includes("finished") || msg.includes("stopped") || msg.includes("Error")) { 
-        isScriptRunning = false; 
-        document.getElementById('script-status-text').textContent = 'Idle'; 
-        document.getElementById('script-status-text').style.color = 'var(--text-secondary)'; 
-    } 
-} 
-
-// ================= CORE ACTIONS ================= 
+function setupSmartCopy() { const output = document.getElementById('output'); output.addEventListener('keydown', function(e) { if (e.key === 'Enter') { const selection = window.getSelection().toString(); if (selection) { e.preventDefault(); navigator.clipboard.writeText(selection).catch(err => {}); } } }); } 
+function setupKeyboardShortcuts() { document.addEventListener('keydown', function(event) { if (event.target.tagName === 'INPUT' && event.target.id !== 'input') return; if (event.key === 'F2') { event.preventDefault(); toggleConnection(); } else if (event.key === 'F3') { event.preventDefault(); scanPorts(); } else if (event.key === 'Escape') { event.preventDefault(); closeModal(); } }); } 
+function adjustColor(hex, amount) { hex = hex.replace('#', ''); let r = parseInt(hex.substring(0, 2), 16); let g = parseInt(hex.substring(2, 4), 16); let b = parseInt(hex.substring(4, 6), 16); r = Math.min(255, Math.max(0, r + amount)); g = Math.min(255, Math.max(0, g + amount)); b = Math.min(255, Math.max(0, b + amount)); return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`; } 
+function applyTheme(themeData) { if (!themeData) return; const root = document.documentElement; const bgLuminance = parseInt(themeData.Background.substring(1, 3), 16) + parseInt(themeData.Background.substring(3, 5), 16) + parseInt(themeData.Background.substring(5, 7), 16); const isDark = bgLuminance < 384; const step = isDark ? 15 : -15; root.style.setProperty('--bg-primary', themeData.Background); root.style.setProperty('--bg-secondary', adjustColor(themeData.Background, step)); root.style.setProperty('--bg-tertiary', adjustColor(themeData.Background, step * 2)); root.style.setProperty('--border-color', adjustColor(themeData.Background, step * 3)); root.style.setProperty('--text-primary', themeData.Foreground); root.style.setProperty('--text-secondary', adjustColor(themeData.Foreground, isDark ? -80 : 80)); root.style.setProperty('--accent-color', themeData.Blue); root.style.setProperty('--accent-hover', adjustColor(themeData.Blue, isDark ? 30 : -30)); root.style.setProperty('--danger-color', themeData.Red); root.style.setProperty('--success-color', themeData.Green); root.style.setProperty('--warning-color', themeData.Yellow); if (term) { term.setOption('theme', { background: themeData.Background, foreground: themeData.Foreground, cursor: themeData.Cursor, selectionBackground: themeData.Cursor + '40', black: themeData.Black, red: themeData.Red, green: themeData.Green, yellow: themeData.Yellow, blue: themeData.Blue, magenta: themeData.Magenta, cyan: themeData.Cyan, white: themeData.White, brightBlack: themeData.BrightBlack, brightRed: themeData.BrightRed, brightGreen: themeData.BrightGreen, brightYellow: themeData.BrightYellow, brightBlue: themeData.BrightBlue, brightMagenta: themeData.BrightMagenta, brightCyan: themeData.BrightCyan, brightWhite: themeData.BrightWhite }); } } 
+function handleThemePresetChange() { const sel = document.getElementById('theme-preset-select'); const customArea = document.getElementById('custom-theme-area'); const name = sel.value; if (name === "Custom") { customArea.style.display = 'flex'; handleCustomThemeChange(); } else { customArea.style.display = 'none'; applyTheme(themePresets[name]); saveConfigSilently(); } } 
+function handleCustomThemeChange() { applyTheme({ Name: "Custom", Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] }); saveConfigSilently(); } 
+function listScripts() { fetch('/listscripts', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') { const select = document.getElementById('script-select'); select.innerHTML = '<option value="">-- Select Script --</option>'; data.scripts.forEach(s => { const opt = document.createElement('option'); opt.value = s; opt.textContent = s; select.appendChild(opt); }); } }); } 
+function runScript() { const filename = document.getElementById('script-select').value; if (!filename) return alert("Please select a script first."); isScriptRunning = true; document.getElementById('script-status-text').textContent = 'Running...'; document.getElementById('script-status-text').style.color = 'var(--success-color)'; document.getElementById('script-console').innerHTML = ''; const formData = new FormData(); formData.append('filename', filename); fetch('/runscript', { method: 'POST', body: formData }).then(r => r.json()).then(data => { if (data.status !== 'ok') { appendToScriptConsole("❌ Failed to start: " + data.message); isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Error'; document.getElementById('script-status-text').style.color = 'var(--danger-color)'; } else { appendToScriptConsole(`🚀 Executing: ${filename}`); } }); } 
+function stopScript() { fetch('/stopscript', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') { isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Stopped'; document.getElementById('script-status-text').style.color = 'var(--warning-color)'; } }); } 
+function appendToScriptConsole(msg) { const con = document.getElementById('script-console'); const div = document.createElement('div'); div.textContent = msg; con.appendChild(div); con.scrollTop = con.scrollHeight; if (msg.includes("finished") || msg.includes("stopped") || msg.includes("Error")) { isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Idle'; document.getElementById('script-status-text').style.color = 'var(--text-secondary)'; } } 
 function toggleConnection() { isConnected ? disconnect() : connect(); } 
-function connect() { 
-    fetch('/connect', { method: 'POST' }).then(r => r.json()).then(data => { 
-        if (data.status === 'connected') { isConnected = true; updateConnectionStatus(true); } 
-        else { alert('Connection failed: ' + data.message); } 
-    }); 
-} 
-function disconnect() { 
-    fetch('/disconnect', { method: 'POST' }).then(r => r.json()).then(data => { 
-        if (data.status === 'disconnected') { isConnected = false; updateConnectionStatus(false); } 
-    }); 
-} 
-function scanPorts() { 
-    const modalBody = document.getElementById('modal-body'); 
-    modalBody.innerHTML = `<h3>Scanning...</h3>`; 
-    document.getElementById('modal').style.display = 'block'; 
-    fetch('/scan', { method: 'POST' }).then(r => r.json()).then(data => { 
-        if (data.status === 'ok') showPortSelection(data.ports); 
-        else showPortSelectionError(data.message); 
-    }).catch(error => showPortSelectionError(error.message)); 
-} 
-function setMode(mode) { 
-    if (shellEnabled) return; 
-    const formData = new FormData(); formData.append('mode', mode); 
-    fetch('/setmode', { method: 'POST', body: formData }).then(r => r.json()).then(data => { 
-        if (data.status === 'ok') { currentMode = mode; updateMode(mode); } 
-    }); 
-} 
+function connect() { fetch('/connect', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'connected') { isConnected = true; updateConnectionStatus(true); } else { alert('Connection failed: ' + data.message); } }); } 
+function disconnect() { fetch('/disconnect', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'disconnected') { isConnected = false; updateConnectionStatus(false); } }); } 
+function scanPorts() { const modalBody = document.getElementById('modal-body'); modalBody.innerHTML = `<h3>Scanning...</h3>`; document.getElementById('modal').style.display = 'block'; fetch('/scan', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') showPortSelection(data.ports); else showPortSelectionError(data.message); }).catch(error => showPortSelectionError(error.message)); } 
+function setMode(mode) { if (shellEnabled) return; const formData = new FormData(); formData.append('mode', mode); fetch('/setmode', { method: 'POST', body: formData }).then(r => r.json()).then(data => { if (data.status === 'ok') { currentMode = mode; updateMode(mode); } }); } 
 function setTimestamp(enabled) { timestampEnabled = enabled; updateTimestampStatus(enabled); saveConfigSilently(); } 
 function setShellEnabled(enabled, shouldSave = true) { 
     if (shellEnabled === enabled && !(enabled && !term)) return; 
     userActionLock = true; shellEnabled = enabled; updateShellStatus(enabled); syncShellUI(enabled); 
     if (enabled) { 
-        if (!xtermLoaded) { 
-            syncShellUI(false); addToOutput('[System] Shell mode requires xterm.js.'); shellEnabled = false; updateShellStatus(false); userActionLock = false; return; 
-        } 
-        if (!term) { 
-            try { initTerminal(); } catch (e) { 
-                syncShellUI(false); shellEnabled = false; updateShellStatus(false); addToOutput('[System] Failed to initialize terminal: ' + e.message); userActionLock = false; return; 
-            } 
-        } else { setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } 
-        if (outputMessages.length > 0) { 
-            const plainText = outputMessages.map(msg => { const div = document.createElement('div'); div.innerHTML = msg; return div.textContent || div.innerText || ''; }).join('\r\n'); 
-            if (plainText.trim()) { 
-                term.write('\r\n\x1b[33m--- Previous output transferred ---\x1b[0m\r\n'); term.write(plainText); term.write('\r\n\x1b[33m--- End of transferred output ---\x1b[0m\r\n'); 
-            } 
-            outputMessages = []; pendingMessages = []; document.getElementById('output').innerHTML = ''; 
-        } 
+        if (!xtermLoaded) { syncShellUI(false); addToOutput('[System] Shell mode requires xterm.js.'); shellEnabled = false; updateShellStatus(false); userActionLock = false; return; } 
+        if (!term) { try { initTerminal(); } catch (e) { syncShellUI(false); shellEnabled = false; updateShellStatus(false); addToOutput('[System] Failed to initialize terminal: ' + e.message); userActionLock = false; return; } } 
+        else { setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } 
+        if (outputMessages.length > 0) { const plainText = outputMessages.map(msg => { const div = document.createElement('div'); div.innerHTML = msg; return div.textContent || div.innerText || ''; }).join('\r\n'); if (plainText.trim()) { term.write('\r\n\x1b[33m--- Previous output transferred ---\x1b[0m\r\n'); term.write(plainText); term.write('\r\n\x1b[33m--- End of transferred output ---\x1b[0m\r\n'); } outputMessages = []; pendingMessages = []; document.getElementById('output').innerHTML = ''; outputTrimOffset = 0; } 
     } else { 
-        if (term) { 
-            const buffer = term.buffer.active; let shellOutput = ''; 
-            for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) shellOutput += line.translateToString(true) + "\n"; } 
-            shellOutput = shellOutput.trimEnd().replace(/\x1b\[[0-9;]*m/g, ''); 
-            if (shellOutput) { 
-                addToOutput('<span style="color: #cca700;">--- Shell output transferred ---</span>'); shellOutput.split('\n').forEach(line => { if (line) addToOutput(line); }); addToOutput('<span style="color: #cca700;">--- End of transferred output ---</span>'); 
-            } 
-            term.dispose(); term = null; fitAddon = null; 
-            if (timeGutter) { timeGutter.reset(); timeGutter = null; } 
-        } 
+        if (term) { const buffer = term.buffer.active; let shellOutput = ''; for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) shellOutput += line.translateToString(true) + "\n"; } shellOutput = shellOutput.trimEnd().replace(/\x1b\[[0-9;]*m/g, ''); if (shellOutput) { addToOutput('<span style="color: #cca700;">--- Shell output transferred ---</span>'); shellOutput.split('\n').forEach(line => { if (line) addToOutput(line); }); addToOutput('<span style="color: #cca700;">--- End of transferred output ---</span>'); } term.dispose(); term = null; fitAddon = null; if (timeGutter) { timeGutter.reset(); timeGutter = null; } } 
     } 
     if (shouldSave) saveConfigSilently(); 
     setTimeout(() => { userActionLock = false; }, 3000); 
 } 
+
 function initTerminal() { 
     const currentThemeName = document.getElementById('theme-preset-select').value; 
-    const currentTheme = currentThemeName === "Custom" ? { 
-        Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] 
-    } : themePresets[currentThemeName]; 
-    term = new Terminal({ 
-        cursorBlink: true, theme: { 
-            background: currentTheme.Background, foreground: currentTheme.Foreground, cursor: currentTheme.Cursor, black: currentTheme.Black, red: currentTheme.Red, green: currentTheme.Green, yellow: currentTheme.Yellow, blue: currentTheme.Blue, magenta: currentTheme.Magenta, cyan: currentTheme.Cyan, white: currentTheme.White, brightBlack: currentTheme.BrightBlack, brightRed: currentTheme.BrightRed, brightGreen: currentTheme.BrightGreen, brightYellow: currentTheme.BrightYellow, brightBlue: currentTheme.BrightBlue, brightMagenta: currentTheme.BrightMagenta, brightCyan: currentTheme.BrightCyan, brightWhite: currentTheme.BrightWhite 
-        }, fontSize: parseInt(document.getElementById('fontsize-input').value) || 14, fontFamily: getFullFontStack(document.getElementById('font-input').value), scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000, convertEol: false 
-    }); 
+    const currentTheme = currentThemeName === "Custom" ? { Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] } : themePresets[currentThemeName]; 
+    term = new Terminal({ cursorBlink: true, theme: { background: currentTheme.Background, foreground: currentTheme.Foreground, cursor: currentTheme.Cursor, black: currentTheme.Black, red: currentTheme.Red, green: currentTheme.Green, yellow: currentTheme.Yellow, blue: currentTheme.Blue, magenta: currentTheme.Magenta, cyan: currentTheme.Cyan, white: currentTheme.White, brightBlack: currentTheme.BrightBlack, brightRed: currentTheme.BrightRed, brightGreen: currentTheme.BrightGreen, brightYellow: currentTheme.BrightYellow, brightBlue: currentTheme.BrightBlue, brightMagenta: currentTheme.BrightMagenta, brightCyan: currentTheme.BrightCyan, brightWhite: currentTheme.BrightWhite }, fontSize: parseInt(document.getElementById('fontsize-input').value) || 14, fontFamily: getFullFontStack(document.getElementById('font-input').value), scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000, convertEol: false }); 
     fitAddon = new FitAddon.FitAddon(); term.loadAddon(fitAddon); term.open(termContainer); 
     timeGutter = new TimeGutter(timeGutterEl); timeGutter.bindTerminal(term); updateGutterVisibility(); 
     term.onSelectionChange(() => { if (term.hasSelection()) navigator.clipboard.writeText(term.getSelection()).catch(err => {}); }); 
@@ -561,252 +661,27 @@ function initTerminal() {
     setTimeout(() => { if(term && fitAddon) fitAddon.fit(); if (document.activeElement === document.body || document.activeElement === null || document.activeElement.tagName === 'DIV') term.focus(); }, 200); 
 } 
 
-// ================= HIGHLIGHT LOGIC ================= 
-function hexToAnsi(hex) { 
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex); 
-    if (!result) return ''; 
-    const r = parseInt(result[1], 16); const g = parseInt(result[2], 16); const b = parseInt(result[3], 16); 
-    return `\x1b[1;38;2;${r};${g};${b}m`; 
-} 
-function updateHighlightRules(lines) { 
-    let rules = lines.map(line => { const parts = line.split(':'); if (parts.length < 2) return null; try { return { regexStr: parts[0], color: parts.slice(1).join(':') }; } catch (e) { return null; } }).filter(r => r !== null); 
-    try { 
-        const regexParts = rules.map(r => `(${r.regexStr})`); highlightColorMap = rules.map(r => r.color); 
-        if (regexParts.length > 0) { combinedHighlightRegex = new RegExp(regexParts.join('|'), 'gi'); } else { combinedHighlightRegex = null; } 
-    } catch (e) { combinedHighlightRegex = null; } 
-} 
-function applyShellHighlight(text) { 
-    if (!combinedHighlightRegex) return text; 
-    return text.replace(combinedHighlightRegex, function(match, ...groups) { 
-        for (let i = 0; i < highlightColorMap.length; i++) { if (groups[i] !== undefined) return hexToAnsi(highlightColorMap[i]) + match + '\x1b[0m'; } 
-        return match; 
-    }); 
-} 
-function applyHighlight(text) { 
-    let result = text.replace(/[&<>"]/g, tag => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[tag] || tag); 
-    if (combinedHighlightRegex) { 
-        result = result.replace(combinedHighlightRegex, function(match, ...groups) { 
-            for (let i = 0; i < highlightColorMap.length; i++) { if (groups[i] !== undefined) return `<span style="color:${highlightColorMap[i]};font-weight:bold;">${match}</span>`; } 
-            return match; 
-        }); 
-    } 
-    return result; 
-} 
-
-// ================= UTILITY ================= 
-function addToHistory(command) { 
-    if (!command || command.trim() === '' || shellEnabled) return; command = command.trim(); 
-    if (historyList.length > 0 && historyList[historyList.length - 1] === command) return; 
-    historyList.push(command); if (historyList.length > 100) historyList.shift(); historyIndex = historyList.length; 
-} 
-function navigateHistory(direction) { 
-    if (historyList.length === 0 || shellEnabled) return; 
-    historyIndex = Math.max(0, Math.min(historyList.length - 1, historyIndex + direction)); 
-    document.getElementById('input').value = historyList[historyIndex]; 
-} 
-function sendData() { 
-    if (shellEnabled) return; 
-    const input = document.getElementById('input'); const data = input.value; 
-    if (data === '') return; 
-    const formData = new FormData(); formData.append('data', data); 
-    fetch('/send', { method: 'POST', body: formData }).then(r => r.json()).then(res => { 
-        if (res.status === 'ok') { addToHistory(data); input.value = ''; historyIndex = historyList.length; } 
-        else { alert('Send failed: ' + res.message); } 
-    }); 
-} 
+function hexToAnsi(hex) { const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex); if (!result) return ''; const r = parseInt(result[1], 16); const g = parseInt(result[2], 16); const b = parseInt(result[3], 16); return `\x1b[1;38;2;${r};${g};${b}m`; } 
+function updateHighlightRules(lines) { let rules = lines.map(line => { const parts = line.split(':'); if (parts.length < 2) return null; try { return { regexStr: parts[0], color: parts.slice(1).join(':') }; } catch (e) { return null; } }).filter(r => r !== null); try { const regexParts = rules.map(r => `(${r.regexStr})`); highlightColorMap = rules.map(r => r.color); if (regexParts.length > 0) { combinedHighlightRegex = new RegExp(regexParts.join('|'), 'gi'); } else { combinedHighlightRegex = null; } } catch (e) { combinedHighlightRegex = null; } } 
+function applyShellHighlight(text) { if (!combinedHighlightRegex) return text; return text.replace(combinedHighlightRegex, function(match, ...groups) { for (let i = 0; i < highlightColorMap.length; i++) { if (groups[i] !== undefined) return hexToAnsi(highlightColorMap[i]) + match + '\x1b[0m'; } return match; }); } 
+function applyHighlight(text) { let result = text.replace(/[&<>"]/g, tag => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[tag] || tag); if (combinedHighlightRegex) { result = result.replace(combinedHighlightRegex, function(match, ...groups) { for (let i = 0; i < highlightColorMap.length; i++) { if (groups[i] !== undefined) return `<span style="color:${highlightColorMap[i]};font-weight:bold;">${match}</span>`; } return match; }); } return result; } 
+function addToHistory(command) { if (!command || command.trim() === '' || shellEnabled) return; command = command.trim(); if (historyList.length > 0 && historyList[historyList.length - 1] === command) return; historyList.push(command); if (historyList.length > 100) historyList.shift(); historyIndex = historyList.length; } 
+function navigateHistory(direction) { if (historyList.length === 0 || shellEnabled) return; historyIndex = Math.max(0, Math.min(historyList.length - 1, historyIndex + direction)); document.getElementById('input').value = historyList[historyIndex]; } 
+function sendData() { if (shellEnabled) return; const input = document.getElementById('input'); const data = input.value; if (data === '') return; const formData = new FormData(); formData.append('data', data); fetch('/send', { method: 'POST', body: formData }).then(r => r.json()).then(res => { if (res.status === 'ok') { addToHistory(data); input.value = ''; historyIndex = historyList.length; } else { alert('Send failed: ' + res.message); } }); } 
 function handleInputKeydown(event) { 
+    if (event.key === 'Tab') { if (!shellEnabled) { event.preventDefault(); const formData = new FormData(); formData.append('data', '\t'); fetch('/send', { method: 'POST', body: formData }); } return; }
     if (shellEnabled) return; 
-    if (event.key === 'Enter') { event.preventDefault(); sendData(); } 
-    else if (event.key === 'ArrowUp') { event.preventDefault(); navigateHistory(-1); } 
-    else if (event.key === 'ArrowDown') { event.preventDefault(); navigateHistory(1); } 
+    if (event.key === 'Enter') { event.preventDefault(); sendData(); } else if (event.key === 'ArrowUp') { event.preventDefault(); navigateHistory(-1); } else if (event.key === 'ArrowDown') { event.preventDefault(); navigateHistory(1); } 
 } 
-function exportLog() { 
-    let content = ""; 
-    if (shellEnabled && term) { 
-        const buffer = term.buffer.active; const hasTimestamps = timestampEnabled && timeGutter; 
-        const tsMap = {}; 
-        if (hasTimestamps) { 
-            if (timeGutter.markers && timeGutter.markers.length > 0) { 
-                timeGutter.markers.forEach(m => { if (!m.marker.isDisposed) { tsMap[m.marker.line] = m.ts; } }); 
-            } else if (timeGutter.lineTimestamps) { timeGutter.lineTimestamps.forEach((ts, index) => { if (ts) tsMap[index] = ts; }); } 
-        } 
-        let mergedLines = []; 
-        for (let i = 0; i < buffer.length; i++) { 
-            const line = buffer.getLine(i); 
-            if (line) { 
-                let lineText = line.translateToString(true); 
-                if (line.isWrapped && mergedLines.length > 0) { mergedLines[mergedLines.length - 1].text += lineText; } 
-                else { let ts = hasTimestamps ? (tsMap[i] || '') : ''; mergedLines.push({ text: lineText, ts: ts }); } 
-            } 
-        } 
-        mergedLines.forEach(item => { if (item.ts) { content += `[${item.ts}] ${item.text}\n`; } else { content += `${item.text}\n`; } }); 
-        content = content.trimEnd(); 
-    } else { content = document.getElementById('output').innerText; } 
-    if (!content.trim()) return alert("No data to export."); 
-    const blob = new Blob([content], { type: 'text/plain' }); 
-    const url = URL.createObjectURL(blob); 
-    const a = document.createElement('a'); a.href = url; a.download = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.log`; a.click(); URL.revokeObjectURL(url); 
-} 
+function exportLog() { let content = ""; if (shellEnabled && term) { const buffer = term.buffer.active; const hasTimestamps = timestampEnabled && timeGutter; const tsMap = {}; if (hasTimestamps) { if (timeGutter.markers && timeGutter.markers.length > 0) { timeGutter.markers.forEach(m => { if (!m.marker.isDisposed) { tsMap[m.marker.line] = m.ts; } }); } else if (timeGutter.lineTimestamps) { timeGutter.lineTimestamps.forEach((ts, index) => { if (ts) tsMap[index] = ts; }); } } let mergedLines = []; for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { let lineText = line.translateToString(true); if (line.isWrapped && mergedLines.length > 0) { mergedLines[mergedLines.length - 1].text += lineText; } else { let ts = hasTimestamps ? (tsMap[i] || '') : ''; mergedLines.push({ text: lineText, ts: ts }); } } } mergedLines.forEach(item => { if (item.ts) { content += `[${item.ts}] ${item.text}\n`; } else { content += `${item.text}\n`; } }); content = content.trimEnd(); } else { content = document.getElementById('output').innerText; } if (!content.trim()) return alert("No data to export."); const blob = new Blob([content], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.log`; a.click(); URL.revokeObjectURL(url); } 
 
-function handleImportLog(file) {
-    if (!file) return;
-    if (!shellEnabled || !term) {
-        alert("Please enable Shell mode to view logs.");
-        return;
-    }
-    const reader = new FileReader();
-    reader.onload = (e) => {
-        const text = e.target.result;
-        term.clear();
-        if (timeGutter) timeGutter.reset();
-        
-        isImporting = true;
-        const lines = text.split('\n');
-        const tsRegex = /^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s(.*)$/;
-        let i = 0;
-        
-        // 逐行串行写入，确保光标和 Marker 的绝对正确对应
-        function writeNextLine() {
-            if (i >= lines.length) {
-                isImporting = false;
-                term.scrollToBottom();
-                if (timeGutter) timeGutter.scheduleRender();
-                return;
-            }
-            
-            let line = lines[i].replace(/\r$/, '');
-            i++;
-            
-            const match = line.match(tsRegex);
-            let content = line;
-            let ts = '';
-            if (match) {
-                ts = match[1];
-                content = match[2];
-            }
-            
-            // 1. 在写入这行内容之前，在当前光标位置打一个 Marker (0 表示当前行)
-            let marker = null;
-            try {
-                marker = term.registerMarker(0); 
-            } catch(e) {}
-            
-            // 2. 写入这行内容，必须使用回调函数，保证这行解析完毕并换行后，再处理下一行
-            term.write(applyShellHighlight(content) + '\r\n', () => {
-                // 3. 写入完毕后，将时间戳绑定到刚才打的 Marker 上
-                if (ts && marker) {
-                    timeGutter.markers.push({ marker, ts });
-                    marker.onDispose(() => {
-                        timeGutter.markers = timeGutter.markers.filter(m => m.marker !== marker);
-                        timeGutter.scheduleRender();
-                    });
-                    timeGutter.scheduleRender();
-                } else if (marker) {
-                    // 没有时间戳的行不需要 Marker，直接释放防止内存泄漏
-                    try { marker.dispose(); } catch(e) {}
-                }
-                
-                // 4. 继续写入下一行，每 200 行释放一下主线程防止卡死
-                if (i % 200 === 0) {
-                    setTimeout(writeNextLine, 0);
-                } else {
-                    writeNextLine();
-                }
-            });
-        }
-        
-        writeNextLine();
-    };
-    reader.readAsText(file);
-}
-
-function addToOutput(text) { outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); } 
-function scheduleOutputUpdate() { if (!updateTimer) updateTimer = setTimeout(flushOutput, 16); } 
-function flushOutput() { 
-    updateTimer = null; if (pendingMessages.length === 0) return; 
-    const output = document.getElementById('output'); const fragment = document.createDocumentFragment(); const batch = pendingMessages.splice(0, 50); 
-    batch.forEach(msg => { const div = document.createElement('div'); div.innerHTML = applyHighlight(msg); fragment.appendChild(div); }); 
-    output.appendChild(fragment); output.scrollTop = output.scrollHeight; 
-    if (pendingMessages.length > 0) scheduleOutputUpdate(); 
-} 
-function rerenderAllOutput() { 
-    const output = document.getElementById('output'); output.innerHTML = ''; 
-    outputMessages.forEach(msg => { const div = document.createElement('div'); div.innerHTML = applyHighlight(msg); output.appendChild(div); }); 
-} 
-function clearOutput(sendClear = true) { 
-    if (sendClear) fetch('/clear', { method: 'POST' }); 
-    if (shellEnabled && term) { term.clear(); if (timeGutter) timeGutter.reset(); } 
-    else { document.getElementById('output').innerHTML = ''; pendingMessages = []; outputMessages = []; } 
-} 
+function rerenderAllOutput() { const output = document.getElementById('output'); output.innerHTML = ''; outputMessages.forEach(msg => { const div = document.createElement('div'); div.innerHTML = applyHighlight(ansiToHtml(msg)); output.appendChild(div); }); } 
+function clearOutput(sendClear = true) { if (sendClear) fetch('/clear', { method: 'POST' }); if (shellEnabled && term) { term.clear(); if (timeGutter) timeGutter.reset(); } else { document.getElementById('output').innerHTML = ''; pendingMessages = []; outputMessages = []; outputTrimOffset = 0; } filterOutput.innerHTML = ''; } 
 function updateConnectionStatus(connected) { isConnected = connected; const status = document.getElementById('connection-status'); status.textContent = connected ? 'Connected' : 'Disconnected'; status.className = connected ? 'connected' : ''; } 
 function updateMode(mode) { currentMode = mode; document.getElementById('ascii-mode').checked = (mode === 'ascii'); document.getElementById('hex-mode').checked = (mode === 'hex'); } 
 function updateTimestampStatus(enabled) { timestampEnabled = enabled; document.getElementById('timestamp-on').checked = enabled; document.getElementById('timestamp-off').checked = !enabled; updateGutterVisibility(); } 
 function updateShellStatus(enabled) { shellEnabled = enabled; document.getElementById('shell-on').checked = enabled; document.getElementById('shell-off').checked = !enabled; } 
-function updatePortInfo(port, baud) { document.getElementById('port-info').textContent = `${port} | ${baud}`; } 
-function applyFontSettings(font, size) { 
-    const output = document.getElementById('output'); 
-    if (font) { const fullFont = getFullFontStack(font); output.style.fontFamily = fullFont; if (term) term.setOption('fontFamily', fullFont); } 
-    if (size) { output.style.fontSize = size + 'px'; if (term) { term.setOption('fontSize', parseInt(size)); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } } 
-    if (timeGutter) timeGutter.syncFont(); 
-} 
-function loadConfig() { 
-    fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => { 
-        updateConfig(data.config, true); updateConnectionStatus(data.connected); updateMode(data.mode); 
-        if (data.config && data.config.UI) { setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false); } 
-        else { setShellEnabled(true, false); } 
-        requestAnimationFrame(() => { requestAnimationFrame(() => { fetch('/ready', { method: 'POST' }); }); }); 
-    }).catch(err => { console.error('Config load failed:', err); fetch('/ready', { method: 'POST' }); }); 
-} 
-function updateConfig(config, isInitial = false) { 
-    if (!config) return; 
-    if (config.Serial) { 
-        document.getElementById('port-input').value = config.Serial.Port || 'COM1'; document.getElementById('baud-input').value = config.Serial.Baud || 9600; document.getElementById('databits-select').value = config.Serial.Databits || 8; document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1; document.getElementById('parity-select').value = config.Serial.Parity || 'N'; updatePortInfo(config.Serial.Port, config.Serial.Baud); 
-    } 
-    if (config.UI) { 
-        document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace'; document.getElementById('fontsize-input').value = config.UI.FontSize || 14; document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000; applyFontSettings(config.UI.Font, config.UI.FontSize); updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true); if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true); 
-    } 
-    if (config.Highlight && config.Highlight.Groups) { 
-        const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : ["error:#ff0000", "warn:#ffa500"]; document.getElementById('highlight-input').value = groups.join('\n'); updateHighlightRules(groups); 
-    } 
-    if (config.Theme) { 
-        const name = config.Theme.Name || "Default"; document.getElementById('theme-preset-select').value = name; 
-        if (name === "Custom") { 
-            document.getElementById('custom-theme-area').style.display = 'flex'; document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e'; document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc'; document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff'; applyTheme(config.Theme); 
-        } else { document.getElementById('custom-theme-area').style.display = 'none'; applyTheme(themePresets[name]); } 
-    } 
-} 
-function saveConfig() { 
-    fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }).then(r => r.json()).then(data => { 
-        if (data.status === 'ok') alert('Configuration saved'); else alert('Save failed: ' + data.message); 
-    }); 
-} 
-function saveConfigSilently() { 
-    fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }); 
-} 
-function getFormData() { 
-    const themeName = document.getElementById('theme-preset-select').value; 
-    let themeData = { Name: themeName }; 
-    if (themeName === "Custom") { 
-        themeData.Background = document.getElementById('theme-bg').value; themeData.Foreground = document.getElementById('theme-fg').value; themeData.Cursor = document.getElementById('theme-cursor').value; Object.assign(themeData, themePresets["Default"]); 
-    } else { const preset = themePresets[themeName]; if(preset) Object.assign(themeData, preset); } 
-    return { 
-        Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value }, 
-        UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled, Scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000 }, 
-        Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) }, 
-        Log: { Path: './logs' }, Theme: themeData 
-    }; 
-} 
-function showPortSelection(ports) { 
-    const modalBody = document.getElementById('modal-body'); 
-    if (ports.length === 0) { modalBody.innerHTML = `<p>No available ports.</p>`; return; } 
-    modalBody.innerHTML = `<h3>Select Port</h3><div class="port-list"></div>`; 
-    const list = modalBody.querySelector('.port-list'); 
-    ports.forEach(port => { 
-        const btn = document.createElement('button'); btn.className = 'tool-btn'; btn.style.margin = '5px'; btn.textContent = port; 
-        btn.onclick = () => { document.getElementById('port-input').value = port; updatePortInfo(port, document.getElementById('baud-input').value); saveConfigSilently(); closeModal(); }; 
-        list.appendChild(btn); 
-    }); 
-} 
+function showPortSelection(ports) { const modalBody = document.getElementById('modal-body'); if (ports.length === 0) { modalBody.innerHTML = `<p>No available ports.</p>`; return; } modalBody.innerHTML = `<h3>Select Port</h3><div class="port-list"></div>`; const list = modalBody.querySelector('.port-list'); ports.forEach(port => { const btn = document.createElement('button'); btn.className = 'tool-btn'; btn.style.margin = '5px'; btn.textContent = port; btn.onclick = () => { document.getElementById('port-input').value = port; updatePortInfo(port, document.getElementById('baud-input').value); saveConfigSilently(); closeModal(); }; list.appendChild(btn); }); } 
 function showPortSelectionError(msg) { document.getElementById('modal-body').innerHTML = `<p style="color:red;">Error: ${msg}</p>`; } 
 function closeModal() { document.getElementById('modal').style.display = 'none'; }
 

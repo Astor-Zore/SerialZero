@@ -8,7 +8,6 @@
     <link rel="stylesheet" href="/static/lib/xterm.css">
 </head>
 <body>
-    <!-- Top Toolbar -->
     <div class="toolbar">
         <button id="toggle-sidebar-btn" class="icon-btn">☰</button>
         <div class="title">SerialZero</div>
@@ -21,92 +20,48 @@
             <button id="scan-btn" class="tool-btn">Scan</button>
             <button id="clear-btn" class="tool-btn">Clear</button>
             <button id="export-btn" class="tool-btn">Export</button>
-            <!-- 导入日志 -->
             <input type="file" id="import-log-input" accept=".txt,.log" style="display: none;">
             <button id="import-log-btn" class="tool-btn">Import Log</button>
             <button id="toggle-script-btn" class="icon-btn">Scripts</button>
         </div>
     </div>
 
-    <!-- Main Layout -->
+    <!-- Tab Bar -->
+    <div id="tab-bar" class="tab-bar">
+        <div id="tab-main" class="tab active" data-tab="main">Terminal</div>
+    </div>
+
     <div class="main-container">
         <div id="sidebar" class="sidebar">
-            <!-- 1. 串口设置 -->
             <div class="config-section">
                 <h3>Serial Port</h3>
                 <label>Port: <input type="text" id="port-input" value="COM1"></label>
                 <label>Baudrate: <input type="number" id="baud-input" value="9600"></label>
-                <label>Data Bits:
-                    <select id="databits-select">
-                        <option value="8" selected>8</option>
-                        <option value="7">7</option>
-                        <option value="6">6</option>
-                        <option value="5">5</option>
-                    </select>
-                </label>
-                <label>Stop Bits:
-                    <select id="stopbits-select">
-                        <option value="1" selected>1</option>
-                        <option value="2">2</option>
-                    </select>
-                </label>
-                <label>Parity:
-                    <select id="parity-select">
-                        <option value="N" selected>None</option>
-                        <option value="E">Even</option>
-                        <option value="O">Odd</option>
-                    </select>
-                </label>
+                <label>Data Bits: <select id="databits-select"><option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option></select></label>
+                <label>Stop Bits: <select id="stopbits-select"><option value="1" selected>1</option><option value="2">2</option></select></label>
+                <label>Parity: <select id="parity-select"><option value="N" selected>None</option><option value="E">Even</option><option value="O">Odd</option></select></label>
             </div>
 
-            <!-- 2. 界面显示设置 -->
             <div class="config-section">
                 <h3>Display</h3>
                 <label>Font: <input type="text" id="font-input" value="Cascadia Code"></label>
                 <label>Font Size: <input type="number" id="fontsize-input" value="14"></label>
                 <label>Scrollback: <input type="number" id="scrollback-input" value="100000"></label>
-                <div class="toggle-group">
-                    Mode:
-                    <input type="radio" id="ascii-mode" name="mode" value="ascii" checked> ASCII
-                    <input type="radio" id="hex-mode" name="mode" value="hex"> HEX
-                </div>
-                <div class="toggle-group">
-                    Timestamp:
-                    <input type="radio" id="timestamp-on" name="timestamp" value="on" checked> ON
-                    <input type="radio" id="timestamp-off" name="timestamp" value="off"> OFF
-                </div>
-                <div class="toggle-group">
-                    SHELL:
-                    <input type="radio" id="shell-on" name="shell" value="on" checked> ON
-                    <input type="radio" id="shell-off" name="shell" value="off"> OFF
-                </div>
+                <div class="toggle-group">Mode: <input type="radio" id="ascii-mode" name="mode" value="ascii" checked> ASCII <input type="radio" id="hex-mode" name="mode" value="hex"> HEX</div>
+                <div class="toggle-group">Timestamp: <input type="radio" id="timestamp-on" name="timestamp" value="on" checked> ON <input type="radio" id="timestamp-off" name="timestamp" value="off"> OFF</div>
+                <div class="toggle-group">SHELL: <input type="radio" id="shell-on" name="shell" value="on" checked> ON <input type="radio" id="shell-off" name="shell" value="off"> OFF</div>
             </div>
 
-            <!-- 3. 主题设置 -->
             <div class="config-section">
                 <h3>Theme</h3>
-                <label>Preset:
-                    <select id="theme-preset-select">
-                        <option value="Default" selected>Default</option>
-                        <option value="Dracula">Dracula</option>
-                        <option value="Monokai">Monokai</option>
-                        <option value="Solarized">Solarized Dark</option>
-                        <option value="Gruvbox">Gruvbox</option>
-                        <option value="Nord">Nord</option>
-                        <option value="Custom">Custom</option>
-                    </select>
-                </label>
+                <label>Preset: <select id="theme-preset-select"><option value="Default" selected>Default</option><option value="Dracula">Dracula</option><option value="Monokai">Monokai</option><option value="Solarized">Solarized Dark</option><option value="Gruvbox">Gruvbox</option><option value="Nord">Nord</option><option value="Custom">Custom</option></select></label>
                 <div id="custom-theme-area" style="display: none; flex-direction: column; gap: 8px;">
                     <label>Background: <input type="color" id="theme-bg" value="#1e1e1e"></label>
                     <label>Foreground: <input type="color" id="theme-fg" value="#cccccc"></label>
                     <label>Cursor: <input type="color" id="theme-cursor" value="#ffffff"></label>
                 </div>
             </div>
-
-            <!-- 4. 保存配置按钮 -->
             <button id="save-config-btn" class="action-btn" style="width: 100%; padding: 8px;">Save Config</button>
-
-            <!-- 5. 高亮组设置 (使用 highlight-section 类撑满剩余高度) -->
             <div class="config-section highlight-section">
                 <h3>Highlight (regex:color)</h3>
                 <textarea id="highlight-input" spellcheck="false">error:#ff0000
@@ -115,7 +70,8 @@ ok:#00ff00</textarea>
             </div>
         </div>
 
-        <div class="terminal-wrapper">
+        <!-- Terminal View -->
+        <div id="terminal-wrapper" class="terminal-wrapper">
             <div id="output-container" class="output-container">
                 <div id="output" class="output"></div>
             </div>
@@ -125,21 +81,39 @@ ok:#00ff00</textarea>
                 <div id="terminal-container" class="terminal-container"></div>
             </div>
 
-            <div id="input-area" class="input-area">
-                <button id="toggle-input-btn" class="toggle-input-btn">▼ Send</button>
-                <div class="input-row">
+            <!-- Filter Panel -->
+            <div id="filter-panel" class="filter-panel collapsed">
+                <div class="filter-resize-handle"></div>
+                <button id="filter-main-toggle" class="toggle-panel-btn">▼ Filter</button>
+                <div class="panel-content">
+                    <div class="filter-controls">
+                        <input type="text" id="filter-input" placeholder="Regex Filter (e.g. error|warn)">
+                        <button id="filter-apply-btn" class="tool-btn" style="width: 50px;">OFF</button>
+                        <button id="filter-clear-btn" class="tool-btn" style="width: 50px;">Clear</button>
+                    </div>
+                    <div id="filter-output" class="filter-output"></div>
+                </div>
+            </div>
+
+            <!-- Input Area (Send Panel) -->
+            <!-- This is hidden when Shell ON via JS logic -->
+            <div id="input-area" class="input-area collapsed">
+                <button id="send-toggle-btn" class="toggle-panel-btn">▼ Send</button>
+                <div class="panel-content input-row">
                     <input type="text" id="input" placeholder="Type here and press Enter..." autocomplete="off">
                     <button id="send-btn" class="action-btn">Send</button>
                 </div>
             </div>
         </div>
+        
+        <!-- Log Views Container -->
+        <div id="log-views-container" style="display: none; flex: 1; flex-direction: column; background-color: var(--bg-primary); position: relative;"></div>
 
+        <!-- Script Panel -->
         <div id="script-panel" class="script-panel collapsed">
             <div class="script-header">🤖 Automation Script</div>
             <div class="script-content">
-                <select id="script-select" style="width: 100%; padding: 5px;">
-                    <option value="">-- Select Script --</option>
-                </select>
+                <select id="script-select" style="width: 100%; padding: 5px;"><option value="">-- Select Script --</option></select>
                 <div class="script-controls">
                     <button id="refresh-scripts-btn" class="tool-btn" style="flex:1;">🔄</button>
                     <button id="run-script-btn" class="action-btn" style="flex:2;">▶ Run</button>

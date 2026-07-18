@@ -159,7 +159,7 @@ Edit `config.toml` in the project root (a default file is generated on first run
 go mod tidy
 
 # Build (Go 1.20+ recommended)
-go build -o SerialZero.exe
+go build -ldflags="-H windowsgui" -o SerialZero.exe
 ```
 
 ---
