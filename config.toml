@@ -12,7 +12,7 @@
   font = "CaskaydiaMono NF"
   fontsize = 14
   timestamp = false
-  shell = false
+  shell = true
   scrollback = 1000000
 
 [highlight]

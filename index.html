@@ -65,12 +65,10 @@
             
             <div class="config-section highlight-section">
                 <h3>Highlight (regex:color)</h3>
-                <!-- Color Picker Tool -->
                 <div class="highlight-tool-row">
                     <input type="color" id="color-picker" value="#ff0000" title="Pick color to copy hex code">
                     <span id="color-picker-hint" style="font-size: 10px; color: var(--text-secondary);">Click to copy HEX</span>
                 </div>
-                <!-- Input Wrapper with Preview Strip -->
                 <div class="highlight-input-wrapper">
                     <div id="highlight-preview-strip"></div>
                     <textarea id="highlight-input" spellcheck="false">error:#ff0000
@@ -108,9 +106,15 @@ ok:#00ff00</textarea>
             <!-- Input Area (Send Panel) -->
             <div id="input-area" class="input-area collapsed" style="display: none;">
                 <button id="send-toggle-btn" class="toggle-panel-btn">▼ Send</button>
-                <div class="panel-content input-row">
+                <div class="panel-content">
                     <input type="text" id="input" placeholder="Type here and press Enter..." autocomplete="off">
                     <button id="send-btn" class="action-btn">Send</button>
+                    <!-- NEW: Suffix Selector -->
+                    <select id="suffix-select" class="tool-btn" style="width: 100px; margin-left: 5px;">
+                        <option value="">No Suffix</option>
+                        <option value="\n">+ LF (\n)</option>
+                        <option value="\r\n">+ CRLF (\r\n)</option>
+                    </select>
                 </div>
             </div>
         </div>
