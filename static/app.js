@@ -19,6 +19,7 @@ let timeGutter = null;
 // --- Filter Feature State ---
 let isFilterEnabled = false;
 let filterRegex = null;
+let filterUpdateTimer = null; 
 
 // --- Log Tab State ---
 let currentTab = 'main'; 
@@ -66,7 +67,65 @@ document.addEventListener('DOMContentLoaded', function() {
     setupSidebarFocusManagement(); 
     listScripts(); 
     setupFilterPanel(); 
+    setupHighlightTools(); // NEW
 }); 
+
+// ================= HIGHLIGHT TOOLS LOGIC =================
+function setupHighlightTools() {
+    const colorPicker = document.getElementById('color-picker');
+    const hint = document.getElementById('color-picker-hint');
+    
+    colorPicker.addEventListener('input', (e) => {
+        const color = e.target.value;
+        navigator.clipboard.writeText(color).then(() => {
+            hint.textContent = `Copied ${color}`;
+            setTimeout(() => hint.textContent = "Click to copy HEX", 2000);
+        });
+    });
+
+    setupHighlightPreview();
+}
+
+function setupHighlightPreview() {
+    const textarea = document.getElementById('highlight-input');
+    const previewStrip = document.getElementById('highlight-preview-strip');
+    
+    // Listen for input changes
+    textarea.addEventListener('input', renderHighlightPreviewStrip);
+    
+    // Sync scroll
+    textarea.addEventListener('scroll', () => {
+        previewStrip.scrollTop = textarea.scrollTop;
+    });
+    
+    // Initial render is called in updateConfig now, but we keep this as backup
+    // or call it empty just to setup structure if needed.
+}
+
+// Global helper to render the strip
+function renderHighlightPreviewStrip() {
+    const textarea = document.getElementById('highlight-input');
+    const previewStrip = document.getElementById('highlight-preview-strip');
+    if(!textarea || !previewStrip) return;
+
+    const lines = textarea.value.split('\n');
+    previewStrip.innerHTML = '';
+    
+    lines.forEach(line => {
+        const block = document.createElement('div');
+        block.className = 'preview-color-block';
+        
+        const parts = line.split(':');
+        if (parts.length >= 2) {
+            let color = parts[parts.length - 1].trim();
+            // Check if valid color
+            if (color.startsWith('#') || color.startsWith('rgb') || color.startsWith('hsl')) {
+                block.style.backgroundColor = color;
+            }
+        }
+        previewStrip.appendChild(block);
+    });
+}
 
 // ================= TAB LOGIC =================
 function switchTab(tabId) {
@@ -75,12 +134,10 @@ function switchTab(tabId) {
     const logContainer = document.getElementById('log-views-container');
     const sidebar = document.getElementById('sidebar');
     
-    // Update Tab UI
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     const activeTab = document.querySelector(`.tab[data-tab="${tabId}"]`);
     if (activeTab) activeTab.classList.add('active');
 
-    // Hide all log views first
     Object.keys(logTabs).forEach(id => {
         const view = document.getElementById(id);
         if (view) view.style.display = 'none';
@@ -89,16 +146,14 @@ function switchTab(tabId) {
     if (tabId === 'main') {
         terminalWrapper.style.display = 'flex';
         logContainer.style.display = 'none';
-        sidebar.classList.remove('disabled');
-        // Only show inputArea if shell is OFF
+        sidebar.style.display = 'flex'; 
+        sidebar.classList.remove('disabled'); 
         if (inputArea) inputArea.style.display = shellEnabled ? 'none' : 'flex'; 
     } else {
         terminalWrapper.style.display = 'none';
         logContainer.style.display = 'flex'; 
-        sidebar.classList.add('disabled');
+        sidebar.style.display = 'none'; 
         if (inputArea) inputArea.style.display = 'none';
-        
-        // Show specific log view
         const logView = document.getElementById(tabId);
         if (logView) logView.style.display = 'flex';
     }
@@ -107,30 +162,25 @@ function switchTab(tabId) {
 function createLogTab(fileName) {
     const tabBar = document.getElementById('tab-bar');
     const logContainer = document.getElementById('log-views-container');
-    
     const tabId = `log_${Date.now()}`;
     
-    // Create Tab Button
     const newTab = document.createElement('div');
     newTab.className = 'tab';
     newTab.dataset.tab = tabId;
     newTab.innerHTML = `${fileName} <span class="tab-close">×</span>`;
-    
     tabBar.appendChild(newTab);
     
-    // Get current font settings to apply to new log
     const currentFont = document.getElementById('font-input').value;
     const currentFontSize = document.getElementById('fontsize-input').value;
     const fullFont = getFullFontStack(currentFont);
 
-    // Create Log View Container
     const logWrapper = document.createElement('div');
     logWrapper.id = tabId;
     logWrapper.className = 'terminal-wrapper';
     logWrapper.style.display = 'none';
     logWrapper.innerHTML = `
-        <div class="output-container" style="flex: 1;">
-            <div id="${tabId}_output" class="output" style="font-family: ${fullFont}; font-size: ${currentFontSize}px;"></div>
+        <div class="output-container" style="flex: 1; padding: 0;">
+            <div id="${tabId}_output" class="log-output" style="font-family: ${fullFont}; font-size: var(--log-font-size);"></div>
         </div>
         <div id="${tabId}_filter_panel" class="filter-panel collapsed">
              <div class="filter-resize-handle"></div>
@@ -141,38 +191,25 @@ function createLogTab(fileName) {
                     <button id="${tabId}_filter_toggle" class="tool-btn" style="width: 50px;">OFF</button>
                     <button id="${tabId}_filter_clear" class="tool-btn" style="width: 50px;">Clear</button>
                 </div>
-                <div id="${tabId}_filter_output" class="filter-output" style="font-family: ${fullFont}; font-size: ${currentFontSize}px;"></div>
+                <div id="${tabId}_filter_output" class="filter-output" style="font-family: ${fullFont}; font-size: var(--log-font-size);"></div>
              </div>
         </div>
     `;
     
     logContainer.appendChild(logWrapper);
-    
-    // Initialize State
-    logTabs[tabId] = {
-        messages: [],
-        trimOffset: 0,
-        name: fileName
-    };
-    
+    logTabs[tabId] = { messages: [], trimOffset: 0, name: fileName };
     setupSpecificLogFilter(tabId);
     switchTab(tabId);
-    
     return tabId;
 }
 
 function closeLogTab(tabId) {
     const tabBtn = document.querySelector(`.tab[data-tab="${tabId}"]`);
     if (tabBtn) tabBtn.remove();
-    
     const view = document.getElementById(tabId);
     if (view) view.remove();
-    
     delete logTabs[tabId];
-    
-    if (currentTab === tabId) {
-        switchTab('main');
-    }
+    if (currentTab === tabId) switchTab('main');
 }
 
 // ================= FILTER PANEL IMPLEMENTATION =================
@@ -182,15 +219,13 @@ function setupFilterPanel() {
     const handle = panel.querySelector('.filter-resize-handle');
     const applyBtn = document.getElementById('filter-apply-btn');
     
-    // 1. Toggle Panel Visibility
     mainToggleBtn.addEventListener('click', () => {
-        panel.classList.toggle('collapsed');
-        const arrow = panel.classList.contains('collapsed') ? '▼' : '▲';
-        mainToggleBtn.textContent = `${arrow} Filter`;
+        const isCollapsed = panel.classList.toggle('collapsed');
+        if (isCollapsed) panel.style.height = '';
+        mainToggleBtn.textContent = `${isCollapsed ? '▼' : '▲'} Filter`;
         if(term && fitAddon) fitAddon.fit();
     });
 
-    // 2. Resize Logic
     let isResizing = false;
     handle.addEventListener('mousedown', (e) => { 
         e.preventDefault(); 
@@ -220,12 +255,11 @@ function setupFilterPanel() {
         } 
     });
 
-    // 3. Filter Logic
     filterInput.addEventListener('input', (e) => {
         const pattern = e.target.value.trim();
         try { filterRegex = new RegExp(pattern, 'gi'); filterInput.style.borderColor = pattern ? 'var(--accent-color)' : 'var(--border-color)'; } 
         catch (e) { filterRegex = null; filterInput.style.borderColor = 'var(--danger-color)'; }
-        if (isFilterEnabled) runFullFilter();
+        runFullFilter(); 
     });
 
     applyBtn.addEventListener('click', (e) => { 
@@ -233,12 +267,11 @@ function setupFilterPanel() {
         isFilterEnabled = !isFilterEnabled; 
         applyBtn.textContent = isFilterEnabled ? 'ON' : 'OFF'; 
         applyBtn.style.backgroundColor = isFilterEnabled ? 'var(--success-color)' : ''; 
-        if (isFilterEnabled) runFullFilter(); 
+        runFullFilter(); 
     });
     
     document.getElementById('filter-clear-btn').addEventListener('click', () => { filterOutput.innerHTML = ''; });
     filterOutput.addEventListener('click', (e) => { 
-        if (shellEnabled) return; 
         const row = e.target.closest('.filter-row'); 
         if (row) { 
             const lineIndex = parseInt(row.dataset.lineIndex); 
@@ -259,20 +292,17 @@ function setupSpecificLogFilter(tabId) {
     let isEnabled = false;
     let regex = null;
     
-    // Toggle Visibility
     mainToggleBtn.addEventListener('click', () => {
-        panel.classList.toggle('collapsed');
-        const arrow = panel.classList.contains('collapsed') ? '▼' : '▲';
-        mainToggleBtn.textContent = `${arrow} Filter`;
+        const isCollapsed = panel.classList.toggle('collapsed');
+        if (isCollapsed) panel.style.height = '';
+        mainToggleBtn.textContent = `${isCollapsed ? '▼' : '▲'} Filter`;
     });
 
-    // Resize
     let isResizing = false;
     handle.addEventListener('mousedown', (e) => { e.preventDefault(); isResizing = true; document.body.style.cursor = 'ns-resize'; document.body.style.userSelect = 'none'; panel.style.transition = 'none'; panel.classList.remove('collapsed'); mainToggleBtn.textContent = '▲ Filter'; });
     document.addEventListener('mousemove', (e) => { if (!isResizing) return; const rect = panel.parentElement.getBoundingClientRect(); let h = rect.bottom - e.clientY; h = Math.max(100, Math.min(h, 600)); panel.style.height = `${h}px`; });
     document.addEventListener('mouseup', () => { if (isResizing) { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; panel.style.transition = ''; } });
 
-    // Logic
     input.addEventListener('input', (e) => {
         const pattern = e.target.value.trim();
         try { regex = new RegExp(pattern, 'gi'); input.style.borderColor = pattern ? 'var(--accent-color)' : 'var(--border-color)'; } 
@@ -301,9 +331,10 @@ function setupSpecificLogFilter(tabId) {
 function runFullLogFilter(regex, outputEl, tabId) {
     outputEl.innerHTML = '';
     if (!regex) return;
-    
     const tabData = logTabs[tabId];
     if (!tabData) return;
+
+    updateGlobalLineNumWidth(tabData.messages.length + tabData.trimOffset);
 
     tabData.messages.forEach((msg, index) => {
         const tempDiv = document.createElement('div');
@@ -316,40 +347,82 @@ function runFullLogFilter(regex, outputEl, tabId) {
     });
 }
 
+// Helper to calculate digit width (approximate)
+function getDigitWidth(digits) {
+    return String(digits).length * 8 + 16; 
+}
+
+function updateGlobalLineNumWidth(maxCount) {
+    const width = getDigitWidth(maxCount);
+    document.documentElement.style.setProperty('--line-num-width', `${width}px`);
+    document.querySelectorAll('.filter-line-num').forEach(el => { el.style.width = `${width}px`; });
+    document.querySelectorAll('.log-row-num').forEach(el => { el.style.width = `${width}px`; });
+}
+
+function stripAnsi(str) {
+    return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+function scheduleFilterUpdate() {
+    if (!isFilterEnabled) return;
+    if (filterUpdateTimer) clearTimeout(filterUpdateTimer);
+    filterUpdateTimer = setTimeout(() => {
+        runFullFilter();
+        filterUpdateTimer = null;
+    }, 100); 
+}
+
 function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType) {
     const div = document.createElement('div');
     div.className = 'filter-row';
     div.dataset.lineIndex = lineIndex;
     
-    // Use ansiToHtml and applyHighlight for consistency
-    div.innerHTML = applyHighlight(ansiToHtml(text));
+    const numSpan = document.createElement('span');
+    numSpan.className = 'filter-line-num';
+    numSpan.style.width = `var(--line-num-width)`; 
+    numSpan.textContent = lineIndex + 1;
+    
+    const textSpan = document.createElement('span');
+    textSpan.className = 'filter-text';
+    textSpan.innerHTML = applyHighlight(ansiToHtml(text));
+    
+    div.appendChild(numSpan);
+    div.appendChild(textSpan);
     
     outputEl.appendChild(div);
     
     if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) {
         outputEl.scrollTop = outputEl.scrollHeight;
     }
-    
-    while (outputEl.children.length > 1000) { outputEl.removeChild(outputEl.firstChild); }
 }
 
 function jumpToLine(index, type) {
-    let output, trimOffset;
-    
     if (type.startsWith('log_')) {
+        let output, trimOffset;
         output = document.getElementById(`${type}_output`);
         trimOffset = logTabs[type].trimOffset;
+        
+        const realIndex = index - trimOffset;
+        if (realIndex >= 0 && realIndex < output.children.length) {
+            const target = output.children[realIndex];
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.classList.add('flash-highlight');
+            setTimeout(() => target.classList.remove('flash-highlight'), 1000);
+        }
+    } else if (shellEnabled && term) {
+        const currentY = term.buffer.active.viewportY;
+        term.scrollLines(index - currentY);
+        if (timeGutter) timeGutter.flashLine(index);
     } else {
-        output = document.getElementById('output');
-        trimOffset = outputTrimOffset;
-    }
-    
-    const realIndex = index - trimOffset;
-    if (realIndex >= 0 && realIndex < output.children.length) {
-        const target = output.children[realIndex];
-        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        target.classList.add('flash-highlight');
-        setTimeout(() => target.classList.remove('flash-highlight'), 1000);
+        let output = document.getElementById('output');
+        let trimOffset = outputTrimOffset;
+        const realIndex = index - trimOffset;
+        if (realIndex >= 0 && realIndex < output.children.length) {
+            const target = output.children[realIndex];
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            target.classList.add('flash-highlight');
+            setTimeout(() => target.classList.remove('flash-highlight'), 1000);
+        }
     }
 }
 
@@ -387,40 +460,112 @@ function runFullFilter() {
     if (!filterRegex) return;
     if (shellEnabled && term) {
         const buffer = term.buffer.active;
-        for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { const text = line.translateToString(true); if (filterRegex.test(text)) { appendToSpecificFilterOutput(text, i, filterOutput, 'main'); filterRegex.lastIndex = 0; } } }
+        updateGlobalLineNumWidth(buffer.length);
+        for (let i = 0; i < buffer.length; i++) { 
+            const line = buffer.getLine(i); 
+            if (line) { 
+                const text = line.translateToString(true); 
+                const cleanText = stripAnsi(text);
+                if (filterRegex.test(cleanText)) { 
+                    appendToSpecificFilterOutput(text, i, filterOutput, 'main'); 
+                    filterRegex.lastIndex = 0; 
+                } 
+            } 
+        }
     } else {
-        outputMessages.forEach((msg, index) => { const tempDiv = document.createElement('div'); tempDiv.innerHTML = msg; const text = tempDiv.textContent || tempDiv.innerText || ''; if (filterRegex.test(text)) { appendToSpecificFilterOutput(text, index + outputTrimOffset, filterOutput, 'main'); filterRegex.lastIndex = 0; } });
+        updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset);
+        outputMessages.forEach((msg, index) => { 
+            const tempDiv = document.createElement('div'); 
+            tempDiv.innerHTML = msg; 
+            const text = tempDiv.textContent || tempDiv.innerText || ''; 
+            if (filterRegex.test(text)) { 
+                appendToSpecificFilterOutput(text, index + outputTrimOffset, filterOutput, 'main'); 
+                filterRegex.lastIndex = 0; 
+            } 
+        });
     }
 }
 
 // ================= TIME GUTTER ================= 
 class TimeGutter { 
     constructor(element) { this.el = element; this.markers = []; this.lineTimestamps = []; this.cellHeight = 0; this.term = null; this.viewport = null; this.renderPending = false; } 
-    bindTerminal(term) { this.term = term; this.viewport = term.element.querySelector('.xterm-viewport'); if (!this.viewport) return; this.tryGetCellHeight(); this.syncFont(); term.onLineFeed(() => { const buffer = this.term.buffer.active; const completedIndex = buffer.baseY + buffer.cursorY - 1; if (completedIndex < 0) return; let logicalStart = completedIndex; while (logicalStart > 0) { const line = buffer.getLine(logicalStart); if (line && line.isWrapped) { logicalStart--; } else { break; } } const startLine = buffer.getLine(logicalStart); if (startLine && !startLine.isWrapped) { const now = new Date(); const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}.${now.getMilliseconds().toString().padStart(3,'0')}`; const offset = logicalStart - (buffer.baseY + buffer.cursorY); let marker = null; try { if (typeof this.term.registerMarker === 'function') { marker = this.term.registerMarker(offset); } else if (typeof this.term.addMarker === 'function') { marker = this.term.addMarker(offset); } } catch(e) {} if (marker) { this.markers.push({ marker, ts }); marker.onDispose(() => { this.markers = this.markers.filter(m => m.marker !== marker); this.scheduleRender(); }); } else { while (this.lineTimestamps.length <= logicalStart) { this.lineTimestamps.push(''); } this.lineTimestamps[logicalStart] = ts; } } this.scheduleRender(); }); this.viewport.addEventListener('scroll', () => this.scheduleRender()); term.onResize(() => { this.tryGetCellHeight(); this.syncFont(); this.scheduleRender(); }); } 
+    bindTerminal(term) { this.term = term; this.viewport = term.element.querySelector('.xterm-viewport'); if (!this.viewport) return; this.tryGetCellHeight(); this.syncFont(); term.onLineFeed(() => { const buffer = this.term.buffer.active; const completedIndex = buffer.baseY + buffer.cursorY - 1; if (completedIndex < 0) return; let logicalStart = completedIndex; while (logicalStart > 0) { const line = buffer.getLine(logicalStart); if (line && line.isWrapped) { logicalStart--; } else { break; } } const startLine = buffer.getLine(logicalStart); if (startLine && !startLine.isWrapped) { const lineText = startLine.translateToString(true).trim(); if (lineText.length > 0) { const now = new Date(); const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}.${now.getMilliseconds().toString().padStart(3,'0')}`; const offset = logicalStart - (buffer.baseY + buffer.cursorY); let marker = null; try { if (typeof this.term.registerMarker === 'function') { marker = this.term.registerMarker(offset); } else if (typeof this.term.addMarker === 'function') { marker = this.term.addMarker(offset); } } catch(e) {} if (marker) { this.markers.push({ marker, ts }); marker.onDispose(() => { this.markers = this.markers.filter(m => m.marker !== marker); this.scheduleRender(); }); } else { while (this.lineTimestamps.length <= logicalStart) { this.lineTimestamps.push(''); } this.lineTimestamps[logicalStart] = ts; } } } this.scheduleRender(); }); this.viewport.addEventListener('scroll', () => this.scheduleRender()); term.onResize(() => { this.tryGetCellHeight(); this.syncFont(); this.scheduleRender(); }); } 
     syncFont() { const userFont = document.getElementById('font-input').value; this.el.style.fontFamily = getFullFontStack(userFont); } 
     tryGetCellHeight() { if (!this.term || !this.term.element) return; try { this.cellHeight = this.term._core._renderService.dimensions.actualCellHeight; } catch(e) {} if (!this.cellHeight || this.cellHeight <= 0) { const row = this.term.element.querySelector('.xterm-rows > div'); if (row) this.cellHeight = row.getBoundingClientRect().height; } if (!this.cellHeight || this.cellHeight <= 0) { setTimeout(() => this.tryGetCellHeight(), 100); } } 
     reset() { this.markers.forEach(m => { try { m.marker.dispose(); } catch(e) {} }); this.markers = []; this.lineTimestamps = []; this.el.innerHTML = ''; } 
+    
+    flashLine(lineIndex) {
+        const lines = this.el.querySelectorAll('.gutter-line');
+        lines.forEach(line => {
+            const numEl = line.querySelector('.line-num-col');
+            if (numEl && parseInt(numEl.textContent) === lineIndex + 1) {
+                line.classList.add('flash-highlight');
+                setTimeout(() => line.classList.remove('flash-highlight'), 1000);
+            }
+        });
+    }
+
     scheduleRender() { if (!this.renderPending) { this.renderPending = true; requestAnimationFrame(() => { this.render(); this.renderPending = false; }); } } 
-    render() { if (!this.term || !this.cellHeight || !this.viewport) return; const buffer = this.term.buffer.active; const bufferLength = buffer.length; const scrollTop = this.viewport.scrollTop; const viewportHeight = this.viewport.clientHeight; let startRow = Math.floor(scrollTop / this.cellHeight) - 2; let endRow = Math.ceil((scrollTop + viewportHeight) / this.cellHeight) + 2; startRow = Math.max(0, startRow); let html = ''; if (this.markers.length > 0) { this.markers.forEach(m => { if (!m.marker.isDisposed) { const line = m.marker.line; if (line !== undefined && line !== null && line >= startRow && line <= endRow) { const top = (line * this.cellHeight) - scrollTop; html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">${m.ts}</div>`; } } }); } else { while (this.lineTimestamps.length > bufferLength) { this.lineTimestamps.shift(); } while (this.lineTimestamps.length < bufferLength) { this.lineTimestamps.push(''); } for (let i = startRow; i < endRow; i++) { const ts = this.lineTimestamps[i]; if (ts) { const top = (i * this.cellHeight) - scrollTop; html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">${ts}</div>`; } } } this.el.innerHTML = html; } 
+    render() { 
+        if (!this.term || !this.cellHeight || !this.viewport) return; 
+        const buffer = this.term.buffer.active; 
+        const scrollTop = this.viewport.scrollTop; 
+        
+        const startRow = Math.round(scrollTop / this.cellHeight); 
+        const viewportHeight = this.viewport.clientHeight;
+        const rowCount = Math.ceil(viewportHeight / this.cellHeight) + 2; 
+        const endRow = startRow + rowCount;
+        
+        const maxLine = buffer.length;
+        const numWidth = getDigitWidth(maxLine); 
+        const timeWidth = timestampEnabled ? 90 : 0; 
+        this.el.style.width = `${numWidth + timeWidth}px`;
+
+        updateGlobalLineNumWidth(maxLine);
+
+        if (timestampEnabled) this.el.classList.add('has-timestamps');
+        else this.el.classList.remove('has-timestamps');
+
+        const markerMap = {};
+        this.markers.forEach(m => { if (!m.marker.isDisposed) markerMap[m.marker.line] = m.ts; });
+
+        let html = ''; 
+        for (let i = startRow; i < endRow; i++) {
+            if (i < 0) continue;
+            const top = (i * this.cellHeight) - scrollTop;
+            const lineNum = i + 1;
+            let ts = markerMap[i] || this.lineTimestamps[i] || '';
+            
+            html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;">
+                <span class="line-num-col" style="width: ${numWidth}px">${lineNum}</span>
+                ${timestampEnabled ? `<span class="time-col">${ts}</span>` : ''}
+            </div>`;
+        }
+        this.el.innerHTML = html; 
+    } 
 } 
 
 // ================= CORE LOGIC ================= 
 function getFullFontStack(userFont) { if (!userFont || userFont.trim() === '') { return DEFAULT_FONT_STACK; } return `${userFont}, ${DEFAULT_FONT_STACK}`; } 
-
 function syncShellUI(enabled) { 
     if (enabled) { 
         outputContainer.style.display = 'none'; 
         shellArea.style.display = 'flex'; 
-        inputArea.style.display = 'none'; // Hide Send panel when Shell ON
+        inputArea.style.display = 'none'; 
         updateGutterVisibility(); 
     } else { 
         outputContainer.style.display = 'flex'; 
         shellArea.style.display = 'none'; 
-        inputArea.style.display = 'flex'; // Show Send panel when Shell OFF
+        inputArea.style.display = 'flex'; 
     } 
 } 
 
-function updateGutterVisibility() { if (!timeGutterEl) return; timeGutterEl.style.display = (shellEnabled && timestampEnabled) ? 'block' : 'none'; setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } 
+function updateGutterVisibility() { 
+    if (!timeGutterEl) return; 
+    timeGutterEl.style.display = 'block'; 
+    if(timeGutter) timeGutter.render(); 
+    if(term && fitAddon) fitAddon.fit();
+} 
 
 function initWebSocket() { 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; 
@@ -434,8 +579,8 @@ function initWebSocket() {
                     if (shellEnabled) { 
                         if (term) { 
                             let msg = data.message.replace(/\r?\n/g, '\r\n'); 
-                            checkAndFilter(data.message.replace(/\r?\n/g, ''), term.buffer.active.baseY + term.buffer.active.cursorY); 
                             term.write(applyShellHighlight(msg)); 
+                            scheduleFilterUpdate(); 
                         } else addToOutput(data.message); 
                     } else { addToOutput(data.message); } 
                     break; 
@@ -454,15 +599,11 @@ function initWebSocket() {
 function setupSidebarFocusManagement() { document.querySelectorAll('#sidebar input, #sidebar select, #sidebar textarea').forEach(el => { el.addEventListener('mousedown', function(e) { if (term) term.blur(); }); el.addEventListener('focus', function() { if (term) term.blur(); }); }); } 
 
 function setupEventListeners() { 
-    // Tab Bar Delegate
     document.getElementById('tab-bar').addEventListener('click', (e) => {
         const tab = e.target.closest('.tab');
         if (tab) {
-            if (e.target.classList.contains('tab-close')) {
-                closeLogTab(tab.dataset.tab);
-            } else {
-                switchTab(tab.dataset.tab);
-            }
+            if (e.target.classList.contains('tab-close')) { closeLogTab(tab.dataset.tab); } 
+            else { switchTab(tab.dataset.tab); }
         }
     });
 
@@ -475,7 +616,6 @@ function setupEventListeners() {
     document.getElementById('input').addEventListener('keydown', handleInputKeydown); 
     document.getElementById('toggle-sidebar-btn').addEventListener('click', () => { document.getElementById('sidebar').classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); 
     
-    // Input Area Toggle
     document.getElementById('send-toggle-btn').addEventListener('click', function() {
         const area = document.getElementById('input-area');
         area.classList.toggle('collapsed');
@@ -503,6 +643,8 @@ function handleImportLog(file) {
         const text = e.target.result;
         const lines = text.split('\n');
         const tsRegex = /^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s(.*)$/;
+        const numWidth = getDigitWidth(lines.length);
+        updateGlobalLineNumWidth(lines.length);
         
         let i = 0;
         const outputEl = document.getElementById(`${tabId}_output`);
@@ -515,13 +657,20 @@ function handleImportLog(file) {
                 if (match) content = match[2];
                 tabData.messages.push(content);
                 
-                const div = document.createElement('div');
-                div.innerHTML = applyHighlight(ansiToHtml(content));
-                outputEl.appendChild(div);
+                const rowDiv = document.createElement('div');
+                rowDiv.className = 'log-row';
+                const numSpan = document.createElement('div');
+                numSpan.className = 'log-row-num';
+                numSpan.textContent = tabData.messages.length;
+                numSpan.style.width = `var(--line-num-width)`;
+                const textSpan = document.createElement('div');
+                textSpan.className = 'log-row-text';
+                textSpan.innerHTML = applyHighlight(ansiToHtml(content));
+                rowDiv.appendChild(numSpan);
+                rowDiv.appendChild(textSpan);
+                outputEl.appendChild(rowDiv);
             });
-            
             outputEl.scrollTop = outputEl.scrollHeight;
-            
             i += 500;
             if (i < lines.length) setTimeout(processChunk, 5);
         }
@@ -533,17 +682,37 @@ function handleImportLog(file) {
 function addToOutput(text) { 
     outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); 
     const tempDiv = document.createElement('div'); tempDiv.innerHTML = text; 
-    checkAndFilter(tempDiv.textContent || tempDiv.innerText || '', outputMessages.length - 1 + outputTrimOffset); 
+    const cleanText = tempDiv.textContent || tempDiv.innerText || '';
+    if (isFilterEnabled && filterRegex && filterRegex.test(cleanText)) { 
+        appendToSpecificFilterOutput(cleanText, outputMessages.length - 1 + outputTrimOffset, filterOutput, 'main'); 
+    } 
 } 
-
 function scheduleOutputUpdate() { if (!updateTimer) updateTimer = setTimeout(flushOutput, 16); } 
-
 function flushOutput() { 
     updateTimer = null; if (pendingMessages.length === 0) return; 
     const output = document.getElementById('output'); 
     const fragment = document.createDocumentFragment(); 
     const batch = pendingMessages.splice(0, FLUSH_BATCH_SIZE); 
-    batch.forEach(msg => { const div = document.createElement('div'); div.innerHTML = applyHighlight(ansiToHtml(msg)); fragment.appendChild(div); }); 
+
+    updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset);
+
+    batch.forEach(msg => { 
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'log-row';
+
+        const numSpan = document.createElement('div');
+        numSpan.className = 'log-row-num';
+        numSpan.style.width = `var(--line-num-width)`;
+        numSpan.textContent = (outputMessages.length + outputTrimOffset); 
+
+        const textSpan = document.createElement('div');
+        textSpan.className = 'log-row-text';
+        textSpan.innerHTML = applyHighlight(ansiToHtml(msg));
+
+        rowDiv.appendChild(numSpan);
+        rowDiv.appendChild(textSpan);
+        fragment.appendChild(rowDiv);
+    }); 
     output.appendChild(fragment); 
     
     while (output.children.length > MAX_OUTPUT_LINES) { output.removeChild(output.firstChild); outputMessages.shift(); outputTrimOffset++; }
@@ -552,53 +721,75 @@ function flushOutput() {
     if (pendingMessages.length > 0) scheduleOutputUpdate(); 
 } 
 
-function checkAndFilter(text, index) { if (!isFilterEnabled || !filterRegex) return; if (filterRegex.test(text)) { appendToSpecificFilterOutput(text, index, filterOutput, 'main'); } }
-
 // ================= UTILITY & CONFIG ================= 
-
 function applyFontSettings(font, size) { 
     const output = document.getElementById('output');
     const fullFont = getFullFontStack(font); 
-    
-    // Apply to main output
     output.style.fontFamily = fullFont;
     output.style.fontSize = size + 'px';
 
-    // Apply to main filter output
-    const mainFilterOutput = document.getElementById('filter-output');
-    if(mainFilterOutput) {
-        mainFilterOutput.style.fontFamily = fullFont;
-        mainFilterOutput.style.fontSize = size + 'px';
+    // Update dynamic CSS variables
+    document.documentElement.style.setProperty('--log-font-size', `${size}px`);
+    document.documentElement.style.setProperty('--gutter-font-size', `${Math.max(10, size - 1)}px`);
+
+    // Apply font to Highlight Input
+    const highlightInput = document.getElementById('highlight-input');
+    if(highlightInput) {
+        highlightInput.style.fontFamily = fullFont;
+        highlightInput.style.fontSize = `${size}px`;
     }
 
-    // Apply to all Log tabs
+    const mainFilterOutput = document.getElementById('filter-output');
+    if(mainFilterOutput) { mainFilterOutput.style.fontFamily = fullFont; mainFilterOutput.style.fontSize = size + 'px'; }
+
     Object.keys(logTabs).forEach(tabId => {
         const logOutput = document.getElementById(`${tabId}_output`);
         const logFilterOutput = document.getElementById(`${tabId}_filter_output`);
-        if(logOutput) {
-            logOutput.style.fontFamily = fullFont;
-            logOutput.style.fontSize = size + 'px';
-        }
-        if(logFilterOutput) {
-            logFilterOutput.style.fontFamily = fullFont;
-            logFilterOutput.style.fontSize = size + 'px';
-        }
+        if(logOutput) { logOutput.style.fontFamily = fullFont; logOutput.style.fontSize = `var(--log-font-size)`; }
+        if(logFilterOutput) { logFilterOutput.style.fontFamily = fullFont; logFilterOutput.style.fontSize = size + 'px'; }
     });
 
-    // Apply to Xterm
-    if (term) {
-        term.setOption('fontFamily', fullFont);
-        term.setOption('fontSize', parseInt(size));
-        setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50);
-    }
+    if (term) { term.setOption('fontFamily', fullFont); term.setOption('fontSize', parseInt(size)); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); }
     if (timeGutter) timeGutter.syncFont(); 
 } 
 
 function updatePortInfo(port, baud) { document.getElementById('port-info').textContent = `${port} | ${baud}`; } 
 
-function loadConfig() { fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => { updateConfig(data.config, true); updateConnectionStatus(data.connected); updateMode(data.mode); if (data.config && data.config.UI) { setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false); } else { setShellEnabled(true, false); } requestAnimationFrame(() => { requestAnimationFrame(() => { fetch('/ready', { method: 'POST' }); }); }); }).catch(err => { console.error('Config load failed:', err); fetch('/ready', { method: 'POST' }); }); } 
+function loadConfig() { 
+    fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => { 
+        updateConfig(data.config, true); 
+        updateConnectionStatus(data.connected); 
+        updateMode(data.mode); 
+        if (data.config && data.config.UI) { 
+            setShellEnabled(data.config.UI.Shell !== undefined ? data.config.UI.Shell : true, false); 
+        } else { 
+            setShellEnabled(true, false); 
+        } 
+        requestAnimationFrame(() => { requestAnimationFrame(() => { fetch('/ready', { method: 'POST' }); }); }); 
+    }).catch(err => { console.error('Config load failed:', err); fetch('/ready', { method: 'POST' }); }); 
+} 
 
-function updateConfig(config, isInitial = false) { if (!config) return; if (config.Serial) { document.getElementById('port-input').value = config.Serial.Port || 'COM1'; document.getElementById('baud-input').value = config.Serial.Baud || 9600; document.getElementById('databits-select').value = config.Serial.Databits || 8; document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1; document.getElementById('parity-select').value = config.Serial.Parity || 'N'; updatePortInfo(config.Serial.Port, config.Serial.Baud); } if (config.UI) { document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace'; document.getElementById('fontsize-input').value = config.UI.FontSize || 14; document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000; applyFontSettings(config.UI.Font, config.UI.FontSize); updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true); if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true); } if (config.Highlight && config.Highlight.Groups) { const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : ["error:#ff0000", "warn:#ffa500"]; document.getElementById('highlight-input').value = groups.join('\n'); updateHighlightRules(groups); } if (config.Theme) { const name = config.Theme.Name || "Default"; document.getElementById('theme-preset-select').value = name; if (name === "Custom") { document.getElementById('custom-theme-area').style.display = 'flex'; document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e'; document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc'; document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff'; applyTheme(config.Theme); } else { document.getElementById('custom-theme-area').style.display = 'none'; applyTheme(themePresets[name]); } } } 
+function updateConfig(config, isInitial = false) { 
+    if (!config) return; 
+    if (config.Serial) { document.getElementById('port-input').value = config.Serial.Port || 'COM1'; document.getElementById('baud-input').value = config.Serial.Baud || 9600; document.getElementById('databits-select').value = config.Serial.Databits || 8; document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1; document.getElementById('parity-select').value = config.Serial.Parity || 'N'; updatePortInfo(config.Serial.Port, config.Serial.Baud); } 
+    if (config.UI) { 
+        document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace'; 
+        document.getElementById('fontsize-input').value = config.UI.FontSize || 14; 
+        document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000; 
+        applyFontSettings(config.UI.Font, config.UI.FontSize); 
+        updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true); 
+        if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true); 
+    } 
+    if (config.Highlight && config.Highlight.Groups) { 
+        const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : ["error:#ff0000", "warn:#ffa500"]; 
+        document.getElementById('highlight-input').value = groups.join('\n'); 
+        updateHighlightRules(groups); 
+        
+        // FIX: Manually trigger preview rendering after config load
+        renderHighlightPreviewStrip(); 
+    } 
+    if (config.Theme) { const name = config.Theme.Name || "Default"; document.getElementById('theme-preset-select').value = name; if (name === "Custom") { document.getElementById('custom-theme-area').style.display = 'flex'; document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e'; document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc'; document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff'; applyTheme(config.Theme); } else { document.getElementById('custom-theme-area').style.display = 'none'; applyTheme(themePresets[name]); } } 
+}
 
 function addConfigChangeListeners() { 
     ['port-input', 'baud-input', 'databits-select', 'stopbits-select', 'parity-select', 'font-input', 'fontsize-input', 'highlight-input', 'scrollback-input'].forEach(id => { document.getElementById(id).addEventListener('change', saveConfigSilently); }); 
@@ -616,8 +807,6 @@ function saveConfigSilently() { fetch('/saveconfig', { method: 'POST', headers: 
 function getFormData() { const themeName = document.getElementById('theme-preset-select').value; let themeData = { Name: themeName }; if (themeName === "Custom") { themeData.Background = document.getElementById('theme-bg').value; themeData.Foreground = document.getElementById('theme-fg').value; themeData.Cursor = document.getElementById('theme-cursor').value; Object.assign(themeData, themePresets["Default"]); } else { const preset = themePresets[themeName]; if(preset) Object.assign(themeData, preset); } return { Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value }, UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled, Scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000 }, Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) }, Log: { Path: './logs' }, Theme: themeData }; } 
 
 // ================= REST OF HELPER FUNCTIONS =================
-// (Including setupSmartCopy, setupKeyboardShortcuts, adjustColor, applyTheme, handleThemePresetChange, handleCustomThemeChange, listScripts, runScript, stopScript, appendToScriptConsole, toggleConnection, connect, disconnect, scanPorts, setMode, setTimestamp, setShellEnabled, initTerminal, hexToAnsi, updateHighlightRules, applyShellHighlight, applyHighlight, addToHistory, navigateHistory, sendData, handleInputKeydown, exportLog, rerenderAllOutput, clearOutput, updateConnectionStatus, updateMode, updateTimestampStatus, updateShellStatus, showPortSelection, showPortSelectionError, closeModal)
-
 function setupSmartCopy() { const output = document.getElementById('output'); output.addEventListener('keydown', function(e) { if (e.key === 'Enter') { const selection = window.getSelection().toString(); if (selection) { e.preventDefault(); navigator.clipboard.writeText(selection).catch(err => {}); } } }); } 
 function setupKeyboardShortcuts() { document.addEventListener('keydown', function(event) { if (event.target.tagName === 'INPUT' && event.target.id !== 'input') return; if (event.key === 'F2') { event.preventDefault(); toggleConnection(); } else if (event.key === 'F3') { event.preventDefault(); scanPorts(); } else if (event.key === 'Escape') { event.preventDefault(); closeModal(); } }); } 
 function adjustColor(hex, amount) { hex = hex.replace('#', ''); let r = parseInt(hex.substring(0, 2), 16); let g = parseInt(hex.substring(2, 4), 16); let b = parseInt(hex.substring(4, 6), 16); r = Math.min(255, Math.max(0, r + amount)); g = Math.min(255, Math.max(0, g + amount)); b = Math.min(255, Math.max(0, b + amount)); return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`; } 
@@ -679,7 +868,12 @@ function rerenderAllOutput() { const output = document.getElementById('output');
 function clearOutput(sendClear = true) { if (sendClear) fetch('/clear', { method: 'POST' }); if (shellEnabled && term) { term.clear(); if (timeGutter) timeGutter.reset(); } else { document.getElementById('output').innerHTML = ''; pendingMessages = []; outputMessages = []; outputTrimOffset = 0; } filterOutput.innerHTML = ''; } 
 function updateConnectionStatus(connected) { isConnected = connected; const status = document.getElementById('connection-status'); status.textContent = connected ? 'Connected' : 'Disconnected'; status.className = connected ? 'connected' : ''; } 
 function updateMode(mode) { currentMode = mode; document.getElementById('ascii-mode').checked = (mode === 'ascii'); document.getElementById('hex-mode').checked = (mode === 'hex'); } 
-function updateTimestampStatus(enabled) { timestampEnabled = enabled; document.getElementById('timestamp-on').checked = enabled; document.getElementById('timestamp-off').checked = !enabled; updateGutterVisibility(); } 
+function updateTimestampStatus(enabled) { 
+    timestampEnabled = enabled; 
+    document.getElementById('timestamp-on').checked = enabled; 
+    document.getElementById('timestamp-off').checked = !enabled; 
+    updateGutterVisibility(); 
+} 
 function updateShellStatus(enabled) { shellEnabled = enabled; document.getElementById('shell-on').checked = enabled; document.getElementById('shell-off').checked = !enabled; } 
 function showPortSelection(ports) { const modalBody = document.getElementById('modal-body'); if (ports.length === 0) { modalBody.innerHTML = `<p>No available ports.</p>`; return; } modalBody.innerHTML = `<h3>Select Port</h3><div class="port-list"></div>`; const list = modalBody.querySelector('.port-list'); ports.forEach(port => { const btn = document.createElement('button'); btn.className = 'tool-btn'; btn.style.margin = '5px'; btn.textContent = port; btn.onclick = () => { document.getElementById('port-input').value = port; updatePortInfo(port, document.getElementById('baud-input').value); saveConfigSilently(); closeModal(); }; list.appendChild(btn); }); } 
 function showPortSelectionError(msg) { document.getElementById('modal-body').innerHTML = `<p style="color:red;">Error: ${msg}</p>`; } 

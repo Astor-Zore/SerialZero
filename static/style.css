@@ -11,6 +11,8 @@
     --danger-color: #c53535;
     --success-color: #388a34;
     --warning-color: #cca700;
+    --log-font-size: 14px;
+    --gutter-font-size: 13px;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -173,31 +175,215 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     position: relative;
     min-width: 200px;
     height: 100%;
+    padding-bottom: 10px;
+    box-sizing: border-box;
 }
 
 .output-container { flex: 1; padding: 8px; overflow: hidden; display: flex; flex-direction: column; }
 .shell-area { flex: 1; display: none; flex-direction: row; overflow: hidden; position: relative; background-color: var(--bg-primary); }
 
-.time-gutter { width: 130px; background-color: var(--bg-secondary); border-right: 1px solid var(--border-color); overflow: hidden; color: var(--text-secondary); user-select: none; position: relative; display: none; opacity: 0.8; transition: opacity 0.2s; }
-.time-gutter:hover { opacity: 1; }
-.gutter-line { position: absolute; left: 0; right: 0; padding: 0 12px; white-space: nowrap; overflow: visible; box-sizing: border-box; text-align: right; display: flex; align-items: center; justify-content: flex-end; }
+/* Time Gutter Design: Excel Style */
+.time-gutter {
+    min-width: 40px; 
+    background-color: var(--bg-primary);
+    overflow: hidden;
+    color: var(--text-secondary);
+    user-select: none;
+    position: relative;
+    display: none;
+    flex-shrink: 0;
+    transition: width 0.1s ease;
+    font-size: var(--gutter-font-size);
+}
+
+.gutter-line {
+    position: absolute;
+    left: 0; right: 0;
+    display: flex;
+    justify-content: flex-start; 
+    align-items: center;
+    padding: 0;
+    white-space: nowrap;
+    font-size: 12px; 
+    box-sizing: border-box;
+    cursor: pointer;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+}
+.gutter-line:hover { background-color: rgba(255, 255, 255, 0.05); }
+
+.line-num-col, .time-col {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    padding: 0 8px;
+    font-family: 'Courier New', monospace;
+    background-color: rgba(0,0,0,0.1);
+    border-right: 1px solid var(--border-color);
+    color: #888;
+}
+
+.line-num-col { justify-content: flex-end; color: #555; }
+.time-col {
+    justify-content: flex-start;
+    font-size: 10px;
+    color: #888;
+    flex: 1;
+    border-right: none;
+    display: none;
+}
+
+.time-gutter.has-timestamps .time-col { display: flex; }
 
 .terminal-container { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
 
-.output {
+/* Unified Log Row Style */
+.log-output {
     height: 100%;
     overflow-y: auto;
     font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
-    font-size: 14px;
+    font-size: var(--log-font-size);
     white-space: pre-wrap;
     word-wrap: break-word;
     outline: none;
     background-color: var(--bg-primary);
     color: var(--text-primary);
 }
+
+.log-row { display: flex; border-bottom: 1px solid rgba(255,255,255,0.02); min-height: 1.2em; }
+.log-row-num {
+    flex-shrink: 0; text-align: right; padding: 0 8px; color: #555; font-size: 12px;
+    user-select: none; border-right: 1px solid var(--border-color); background-color: rgba(0,0,0,0.1);
+    display: flex; align-items: center; justify-content: flex-end;
+}
+.log-row-text { flex: 1; padding: 0 10px 0 10px; word-break: break-all; }
+
+.output {
+    height: 100%;
+    overflow-y: auto;
+    font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+    font-size: var(--log-font-size);
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    outline: none;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 0 15px; 
+}
 .output span[style*="color"] { font-weight: bold; }
 
-/* Unified Panel Styles (Send & Filter) */
+/* Highlight Section Tools */
+.highlight-tool-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 5px;
+}
+#color-picker {
+    width: 20px;
+    height: 15px;
+    padding: 0;
+    border: none;
+    background-color: transparent;
+    cursor: pointer;
+}
+#color-picker::-webkit-color-swatch-wrapper {
+    padding: 0;
+}
+#color-picker::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+}
+
+
+.highlight-input-wrapper {
+    flex: 1;
+    display: flex;
+    border: 1px solid var(--border-color);
+    border-radius: 2px;
+    overflow: hidden;
+    background-color: var(--bg-primary);
+}
+
+/* Preview Strip - Moved to Left, Narrower */
+#highlight-preview-strip {
+    width: 8px; 
+    background-color: var(--bg-secondary);
+    /* Border on the right side to separate from text */
+    border-right: 1px solid var(--border-color); 
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none; 
+    flex-shrink: 0;
+}
+#highlight-preview-strip::-webkit-scrollbar { display: none; }
+
+.preview-color-block {
+    height: 20px; /* Match line height */
+    width: 100%;
+    margin: 0;
+    box-sizing: border-box;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
+}
+
+#highlight-input {
+    flex: 1;
+    border: none;
+    outline: none;
+    resize: none;
+    padding: 4px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px; 
+    background-color: transparent;
+    color: var(--text-primary);
+    line-height: 20px; /* Fixed line height for alignment */
+}
+
+/* Filter Panel */
+.filter-panel {
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    flex-shrink: 0;
+    position: relative;
+    transition: height 0.2s ease;
+    overflow: hidden;
+    height: 30px;
+}
+.filter-panel.collapsed { height: 30px; }
+.filter-panel:not(.collapsed) { height: 200px; }
+.filter-resize-handle { height: 3px; width: 100%; background-color: var(--border-color); cursor: ns-resize; position: absolute; top: 0; z-index: 5; }
+.filter-resize-handle:hover { background-color: var(--accent-color); }
+.filter-controls { display: flex; align-items: center; gap: 10px; padding: 8px 10px; flex-shrink: 0; }
+.filter-controls input { flex: 1; padding: 4px; }
+.filter-output { flex: 1; overflow-y: auto; background-color: var(--bg-primary); border-top: 1px solid var(--border-color); padding: 0; font-size: 13px; white-space: pre-wrap; }
+
+.filter-row { display: flex; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid rgba(255,255,255,0.03); }
+.filter-row:hover { background-color: rgba(255, 255, 255, 0.05); }
+.filter-line-num { width: 50px; flex-shrink: 0; text-align: right; padding: 0 8px; color: #555; font-size: 12px; user-select: none; border-right: 1px solid rgba(255,255,255,0.05); margin-right: 10px; display: flex; align-items: center; justify-content: flex-end; background-color: rgba(0,0,0,0.1); }
+.filter-text { flex: 1; padding: 0 10px 0 0; word-break: break-all; }
+
+.flash-highlight { animation: flash-anim 1s ease-out; }
+@keyframes flash-anim { 0% { background-color: rgba(11, 99, 156, 0.6); } 100% { background-color: transparent; } }
+
+/* Input Area Specifics */
+.input-area {
+    background-color: var(--bg-secondary);
+    border-top: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow: hidden;
+    height: 30px;
+    transition: height 0.2s ease;
+}
+.input-area.collapsed { height: 30px; }
+.input-area:not(.collapsed) { height: 70px; } 
+.input-area .panel-content { flex-direction: row !important; align-items: center; gap: 10px; height: 100%; padding: 10px; }
+#input { flex: 1; background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px; border-radius: 2px; font-family: monospace; font-size: 12px; height: auto; }
+#send-btn { height: auto; padding: 4px 10px; font-size: 12px; }
+
+/* Toggle Panel Button - RESTORED */
 .toggle-panel-btn {
     background: none;
     border: none;
@@ -213,154 +399,14 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
 }
 .toggle-panel-btn:hover { color: var(--text-primary); }
 
-.panel-content {
-    display: none; /* Hidden by default */
-    flex: 1;
-    flex-direction: column; /* Default to column (for Filter) */
-    overflow: hidden;
-}
-
-/* Show content when parent is NOT collapsed */
-.filter-panel:not(.collapsed) .panel-content,
-.input-area:not(.collapsed) .panel-content {
-    display: flex;
-}
-
-/* Filter Panel Specifics */
-.filter-panel {
-    display: flex;
-    flex-direction: column;
-    background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border-color);
-    flex-shrink: 0;
-    position: relative;
-    transition: height 0.2s ease;
-    overflow: hidden;
-    height: 30px; /* Default collapsed height */
-}
-
-.filter-panel.collapsed {
-    height: 30px; 
-}
-
-.filter-panel:not(.collapsed) {
-    height: 200px; /* Default expanded height */
-}
-
-.filter-resize-handle {
-    height: 3px;
-    width: 100%;
-    background-color: var(--border-color);
-    cursor: ns-resize;
-    position: absolute;
-    top: 0; 
-    z-index: 5;
-    transition: background-color 0.2s;
-}
-.filter-resize-handle:hover { background-color: var(--accent-color); }
-
-.filter-controls {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 10px; /* Added padding for left/right space */
-    flex-shrink: 0;
-}
-.filter-controls input { flex: 1; padding: 4px; }
-
-.filter-output {
-    flex: 1;
-    overflow-y: auto;
-    background-color: var(--bg-primary);
-    border-top: 1px solid var(--border-color);
-    padding: 5px 10px;
-    font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
-    font-size: 14px; 
-    white-space: pre-wrap;
-}
-
-.filter-row { cursor: pointer; border-left: 2px solid transparent; padding-left: 2px; }
-.filter-row:hover { background-color: rgba(255, 255, 255, 0.05); }
-.flash-highlight { animation: flash-anim 1s ease-out; }
-@keyframes flash-anim { 0% { background-color: rgba(11, 99, 156, 0.6); } 100% { background-color: transparent; } }
-
-/* Input Area Specifics */
-.input-area {
-    background-color: var(--bg-secondary);
-    border-top: 1px solid var(--border-color);
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-    overflow: hidden;
-    height: 30px; /* Default collapsed */
-    transition: height 0.2s ease;
-}
-.input-area.collapsed { height: 30px; }
-/* Increased height to 70px to fully show input and button */
-.input-area:not(.collapsed) { height: 70px; } 
-
-/* Force Send Panel content to be Row layout */
-.input-area .panel-content {
-    flex-direction: row !important; /* Override the default column */
-    align-items: center;
-    gap: 10px;
-    height: 100%;
-    padding: 5px 10px 10px 10px; /* Top padding added to push content down slightly */
-}
-
-/* Input styling: Match standard inputs in sidebar */
-#input { 
-    flex: 1; 
-    background-color: var(--bg-primary);
-    border: 1px solid var(--border-color);
-    color: var(--text-primary);
-    padding: 4px; /* Match sidebar input padding */
-    border-radius: 2px;
-    font-family: monospace; 
-    font-size: 12px; /* Match sidebar font size */
-    height: auto; /* Auto height based on padding */
-    box-sizing: border-box;
-}
-
-/* Send Button styling: Match standard action buttons */
-#send-btn {
-    height: auto; /* Auto height */
-    padding: 4px 10px; /* Match toolbar button padding */
-    font-size: 12px; /* Match toolbar button font size */
-    border-radius: 3px;
-    /* Inherits .action-btn class from HTML, so background/border is handled there */
-}
-
 /* Right Script Panel */
-.script-panel { 
-    width: 350px; 
-    background-color: var(--bg-secondary); 
-    border-left: 1px solid var(--border-color); 
-    display: flex; 
-    flex-direction: column; 
-    flex-shrink: 0; 
-    transition: width 0.2s ease, border-width 0.2s ease; 
-    overflow: hidden; 
-    height: 100%;
-}
-.script-panel.collapsed { width: 0; border-left-width: 0; overflow: hidden; }
-.script-header { height: 35px; display: flex; justify-content: center; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--border-color); font-weight: bold; font-size: 13px; flex-shrink: 0; }
+.script-panel { width: 350px; background-color: var(--bg-secondary); border-left: 1px solid var(--border-color); display: flex; flex-direction: column; flex-shrink: 0; transition: width 0.2s ease; overflow: hidden; }
+.script-panel.collapsed { width: 0; border-left-width: 0; }
+.script-header { height: 35px; display: flex; justify-content: center; align-items: center; padding: 0 10px; border-bottom: 1px solid var(--border-color); font-weight: bold; }
 .script-content { flex: 1; display: flex; flex-direction: column; padding: 10px; gap: 10px; overflow: hidden; }
-.script-controls { display: flex; gap: 5px; }
-.script-status { font-size: 11px; color: var(--text-secondary); }
-.script-console-label { font-size: 11px; color: var(--text-secondary); margin-top: 5px; text-transform: uppercase; }
-.script-console { flex: 1; background-color: var(--bg-primary); border: 1px solid var(--border-color); padding: 5px; font-family: monospace; font-size: 12px; overflow-y: auto; white-space: pre-wrap; border-radius: 3px; }
 
 /* Modal */
 .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); }
-.modal-content { background-color: var(--bg-secondary); margin: 10% auto; padding: 20px; border: 1px solid var(--border-color); width: 400px; border-radius: 4px; }
+.modal-content { background-color: var(--bg-secondary); margin: 10% auto; padding: 20px; width: 400px; border-radius: 4px; }
 .close { color: var(--text-secondary); float: right; font-size: 20px; cursor: pointer; }
-
-/* Responsive */
-@media (max-width: 768px) {
-    .sidebar { position: absolute; top: 0; bottom: 0; left: 0; z-index: 10; box-shadow: 2px 0 5px rgba(0,0,0,0.5); transition: transform 0.2s ease; }
-    .sidebar.collapsed { transform: translateX(-100%); width: 280px; }
-    .script-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 10; box-shadow: -4px 0 10px rgba(0,0,0,0.3); transition: transform 0.2s ease; }
-    .script-panel.collapsed { transform: translateX(100%); width: 300px; border-left: none; opacity: 1; }
-}
 

@@ -11,8 +11,8 @@
 [ui]
   font = "CaskaydiaMono NF"
   fontsize = 14
-  timestamp = true
-  shell = true
+  timestamp = false
+  shell = false
   scrollback = 1000000
 
 [highlight]
