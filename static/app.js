@@ -230,17 +230,38 @@ function setupSpecificLogFilter(tabId) {
     const mainToggleBtn = panel.querySelector('.toggle-panel-btn');
     const handle = panel.querySelector('.filter-resize-handle');
     let isEnabled = false; let regex = null;
+    let lastHeight = '200px';
 
     mainToggleBtn.addEventListener('click', () => {
         const isCollapsed = panel.classList.toggle('collapsed');
         if (isCollapsed) panel.style.height = '';
+        else panel.style.height = lastHeight;
         mainToggleBtn.textContent = `${isCollapsed ? '▼' : '▲'} Filter`;
     });
 
     let isResizing = false;
-    handle.addEventListener('mousedown', (e) => { e.preventDefault(); isResizing = true; document.body.style.cursor = 'ns-resize'; document.body.style.userSelect = 'none'; panel.style.transition = 'none'; panel.classList.remove('collapsed'); mainToggleBtn.textContent = '▲ Filter'; });
-    document.addEventListener('mousemove', (e) => { if (!isResizing) return; const rect = panel.parentElement.getBoundingClientRect(); let h = rect.bottom - e.clientY; h = Math.max(100, Math.min(h, 600)); panel.style.height = `${h}px`; });
-    document.addEventListener('mouseup', () => { if (isResizing) { isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = ''; panel.style.transition = ''; } });
+    handle.addEventListener('mousedown', (e) => {
+        e.preventDefault(); isResizing = true;
+        document.body.style.cursor = 'ns-resize'; document.body.style.userSelect = 'none';
+        panel.style.transition = 'none'; panel.classList.remove('collapsed');
+        if (!panel.style.height) panel.style.height = '200px';
+        mainToggleBtn.textContent = '▲ Filter';
+    });
+    document.addEventListener('mousemove', (e) => {
+        if (!isResizing) return;
+        const parentRect = panel.parentElement.getBoundingClientRect();
+        const minMainHeight = 50;
+        const maxAllowed = parentRect.height - minMainHeight;
+        let h = parentRect.bottom - e.clientY;
+        h = Math.max(100, Math.min(h, maxAllowed > 100 ? maxAllowed : parentRect.height - 10));
+        panel.style.height = `${h}px`;
+    });
+    document.addEventListener('mouseup', () => {
+        if (isResizing) {
+            isResizing = false; document.body.style.cursor = ''; document.body.style.userSelect = '';
+            panel.style.transition = ''; lastHeight = panel.style.height;
+        }
+    });
 
     input.addEventListener('input', (e) => {
         const pattern = e.target.value.trim();
@@ -252,14 +273,52 @@ function setupSpecificLogFilter(tabId) {
     outputEl.addEventListener('click', (e) => { const row = e.target.closest('.filter-row'); if (row) { const lineIndex = parseInt(row.dataset.lineIndex); if (!isNaN(lineIndex)) jumpToLine(lineIndex, tabId); } });
 }
 
-function runFullLogFilter(regex, outputEl, tabId) { outputEl.innerHTML = ''; if (!regex) return; const tabData = logTabs[tabId]; if (!tabData) return; updateGlobalLineNumWidth(tabData.messages.length + tabData.trimOffset); tabData.messages.forEach((msg, index) => { if (regex.test(msg)) { appendToSpecificFilterOutput(msg, index + tabData.trimOffset, outputEl, tabId); regex.lastIndex = 0; } }); }
+function highlightFilterMatches(text, regex) {
+    if (!regex) return text;
+    if (!regex.source || regex.source === '(?:)') return text;
+    const freshRegex = new RegExp(regex.source, regex.flags);
+    let result = '';
+    let lastIndex = 0;
+    let match;
+    while ((match = freshRegex.exec(text)) !== null) {
+        result += text.substring(lastIndex, match.index);
+        result += `\x00FM\x00${match[0]}\x00FMEND\x00`;
+        lastIndex = match.index + match[0].length;
+        if (match[0].length === 0) {
+            if (freshRegex.lastIndex >= text.length) break;
+            freshRegex.lastIndex++;
+        }
+    }
+    result += text.substring(lastIndex);
+    return result;
+}
+
+/**
+ * @brief Processes a line for the filter panel: applies highlight rules
+ *        and optional filter match highlighting using sentinel markers,
+ *        then escapes, converts ANSI, and replaces markers with HTML.
+ */
+function processFilterLine(text, filterRegex) {
+    let line = applyHighlightRaw(text);
+    if (filterRegex && filterRegex.source && filterRegex.source !== '(?:)') {
+        line = highlightFilterMatches(line, filterRegex);
+    }
+    line = ansiToHtml(escapeHtml(line));
+    line = line.replace(/\x00HL([^\x00]*)\x00([^\x00]*?)\x00HLEND\x00/g,
+        '<span style="color:$1;font-weight:bold;">$2</span>');
+    line = line.replace(/\x00FM\x00([^\x00]*?)\x00FMEND\x00/g,
+        '<mark class="filter-match">$1</mark>');
+    return line;
+}
+
+function runFullLogFilter(regex, outputEl, tabId) { outputEl.innerHTML = ''; if (!regex) return; const tabData = logTabs[tabId]; if (!tabData) return; updateGlobalLineNumWidth(tabData.messages.length + tabData.trimOffset); tabData.messages.forEach((msg, index) => { if (regex.test(msg)) { appendToSpecificFilterOutput(msg, index + tabData.trimOffset, outputEl, tabId, regex); regex.lastIndex = 0; } }); }
 function getDigitWidth(digits) { return String(digits).length * 8 + 16; }
 function updateGlobalLineNumWidth(maxCount) { const width = getDigitWidth(maxCount); document.documentElement.style.setProperty('--line-num-width', `${width}px`); document.querySelectorAll('.filter-line-num').forEach(el => { el.style.width = `${width}px`; }); document.querySelectorAll('.log-row-num').forEach(el => { el.style.width = `${width}px`; }); }
 function stripAnsi(str) { return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); }
 function scheduleFilterUpdate() { if (!isFilterEnabled) return; if (filterUpdateTimer) clearTimeout(filterUpdateTimer); filterUpdateTimer = setTimeout(() => { runFullFilter(); filterUpdateTimer = null; }, 100); }
-function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType) { const div = document.createElement('div'); div.className = 'filter-row'; div.dataset.lineIndex = lineIndex; const numSpan = document.createElement('span'); numSpan.className = 'filter-line-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = lineIndex + 1; const textSpan = document.createElement('span'); textSpan.className = 'filter-text'; textSpan.innerHTML = processLogLine(text); div.appendChild(numSpan); div.appendChild(textSpan); outputEl.appendChild(div); if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) { outputEl.scrollTop = outputEl.scrollHeight; } }
+function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType, filterRegex) { const div = document.createElement('div'); div.className = 'filter-row'; div.dataset.lineIndex = lineIndex; const numSpan = document.createElement('span'); numSpan.className = 'filter-line-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = lineIndex + 1; const textSpan = document.createElement('span'); textSpan.className = 'filter-text'; textSpan.innerHTML = processFilterLine(text, filterRegex); div.appendChild(numSpan); div.appendChild(textSpan); outputEl.appendChild(div); if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) { outputEl.scrollTop = outputEl.scrollHeight; } }
 function jumpToLine(index, type) { if (type.startsWith('log_')) { let output, trimOffset; output = document.getElementById(`${type}_output`); trimOffset = logTabs[type].trimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } else if (shellEnabled && term) { const currentY = term.buffer.active.viewportY; term.scrollLines(index - currentY); if (timeGutter) timeGutter.flashLine(index); } else { let output = document.getElementById('output'); let trimOffset = outputTrimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } }
-function runFullFilter() { filterOutput.innerHTML = ''; if (!filterRegex) return; if (!isFilterEnabled) return; if (shellEnabled && term) { const buffer = term.buffer.active; updateGlobalLineNumWidth(buffer.length); for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { const text = line.translateToString(true); const cleanText = stripAnsi(text); if (filterRegex.test(cleanText)) { appendToSpecificFilterOutput(cleanText, i, filterOutput, 'main'); filterRegex.lastIndex = 0; } } } } else { updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset); outputMessages.forEach((msg, index) => { if (filterRegex.test(msg)) { appendToSpecificFilterOutput(msg, index + outputTrimOffset, filterOutput, 'main'); filterRegex.lastIndex = 0; } }); } }
+function runFullFilter() { filterOutput.innerHTML = ''; if (!filterRegex) return; if (!isFilterEnabled) return; if (shellEnabled && term) { const buffer = term.buffer.active; updateGlobalLineNumWidth(buffer.length); for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { const text = line.translateToString(true); const cleanText = stripAnsi(text); if (filterRegex.test(cleanText)) { appendToSpecificFilterOutput(cleanText, i, filterOutput, 'main', filterRegex); filterRegex.lastIndex = 0; } } } } else { updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset); outputMessages.forEach((msg, index) => { if (filterRegex.test(msg)) { appendToSpecificFilterOutput(msg, index + outputTrimOffset, filterOutput, 'main', filterRegex); filterRegex.lastIndex = 0; } }); } }
 
 // ================= TIME GUTTER =================
 class TimeGutter {
@@ -281,7 +340,7 @@ function initWebSocket() { const wsProtocol = window.location.protocol === 'http
 function setupSidebarFocusManagement() { document.querySelectorAll('#sidebar input, #sidebar select, #sidebar textarea').forEach(el => { el.addEventListener('mousedown', function(e) { if (term) term.blur(); }); el.addEventListener('focus', function() { if (term) term.blur(); }); }); }
 function setupEventListeners() { document.getElementById('tab-bar').addEventListener('click', (e) => { const tab = e.target.closest('.tab'); if (tab) { if (e.target.classList.contains('tab-close')) { closeLogTab(tab.dataset.tab); } else { switchTab(tab.dataset.tab); } } }); document.getElementById('connect-btn').addEventListener('click', toggleConnection); document.getElementById('scan-btn').addEventListener('click', scanPorts); document.getElementById('clear-btn').addEventListener('click', () => clearOutput(true)); document.getElementById('export-btn').addEventListener('click', exportLog); document.getElementById('send-btn').addEventListener('click', sendData); document.getElementById('save-config-btn').addEventListener('click', saveConfig); document.getElementById('input').addEventListener('keydown', handleInputKeydown); document.getElementById('toggle-sidebar-btn').addEventListener('click', () => { document.getElementById('sidebar').classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('send-toggle-btn').addEventListener('click', function() { const area = document.getElementById('input-area'); area.classList.toggle('collapsed'); this.textContent = area.classList.contains('collapsed') ? '▼ Send' : '▲ Send'; }); document.getElementById('toggle-script-btn').addEventListener('click', () => { const panel = document.getElementById('script-panel'); panel.classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('refresh-scripts-btn').addEventListener('click', listScripts); document.getElementById('run-script-btn').addEventListener('click', runScript); document.getElementById('stop-script-btn').addEventListener('click', stopScript); document.getElementById('ascii-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('hex-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('timestamp-on').addEventListener('change', function() { if (this.checked) setTimestamp(true); }); document.getElementById('timestamp-off').addEventListener('change', function() { if (this.checked) setTimestamp(false); }); document.getElementById('shell-on').addEventListener('change', function() { if (this.checked) setShellEnabled(true); }); document.getElementById('shell-off').addEventListener('change', function() { if (this.checked) setShellEnabled(false); }); document.getElementById('theme-preset-select').addEventListener('change', handleThemePresetChange); document.getElementById('theme-bg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-fg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-cursor').addEventListener('input', handleCustomThemeChange); document.querySelector('.close').addEventListener('click', closeModal); window.addEventListener('click', (event) => { if (event.target == document.getElementById('modal')) closeModal(); }); document.getElementById('import-log-btn').addEventListener('click', () => { document.getElementById('import-log-input').click(); }); document.getElementById('import-log-input').addEventListener('change', function(e) { if (this.files.length > 0) { handleImportLog(this.files[0]); this.value = ''; } }); }
 function handleImportLog(file) { if (!file) return; const tabId = createLogTab(file.name); const tabData = logTabs[tabId]; const reader = new FileReader(); reader.onload = (e) => { const text = e.target.result; const lines = text.split('\n'); const tsRegex = /^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s(.*)$/; const numWidth = getDigitWidth(lines.length); updateGlobalLineNumWidth(lines.length); let i = 0; const outputEl = document.getElementById(`${tabId}_output`); function processChunk() { const chunk = lines.slice(i, i + 500); chunk.forEach(line => { const match = line.match(tsRegex); let content = line.replace(/\r$/, ''); if (match) content = match[2]; tabData.messages.push(content); const rowDiv = document.createElement('div'); rowDiv.className = 'log-row'; const numSpan = document.createElement('div'); numSpan.className = 'log-row-num'; numSpan.textContent = tabData.messages.length; numSpan.style.width = `var(--line-num-width)`; const textSpan = document.createElement('div'); textSpan.className = 'log-row-text'; textSpan.innerHTML = processLogLine(content); rowDiv.appendChild(numSpan); rowDiv.appendChild(textSpan); outputEl.appendChild(rowDiv); }); outputEl.scrollTop = outputEl.scrollHeight; i += 500; if (i < lines.length) setTimeout(processChunk, 5); } processChunk(); }; reader.readAsText(file); }
-function addToOutput(text) { outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); if (isFilterEnabled && filterRegex && filterRegex.test(text)) { appendToSpecificFilterOutput(text, outputMessages.length - 1 + outputTrimOffset, filterOutput, 'main'); } }
+function addToOutput(text) { outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); if (isFilterEnabled && filterRegex && filterRegex.test(text)) { appendToSpecificFilterOutput(text, outputMessages.length - 1 + outputTrimOffset, filterOutput, 'main', filterRegex); } }
 function scheduleOutputUpdate() { if (!updateTimer) updateTimer = setTimeout(flushOutput, 16); }
 function flushOutput() { updateTimer = null; if (pendingMessages.length === 0) return; const output = document.getElementById('output'); const fragment = document.createDocumentFragment(); const batch = pendingMessages.splice(0, FLUSH_BATCH_SIZE); updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset); batch.forEach(msg => { const rowDiv = document.createElement('div'); rowDiv.className = 'log-row'; const numSpan = document.createElement('div'); numSpan.className = 'log-row-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = (outputMessages.length + outputTrimOffset); const textSpan = document.createElement('div'); textSpan.className = 'log-row-text'; textSpan.innerHTML = processLogLine(msg); rowDiv.appendChild(numSpan); rowDiv.appendChild(textSpan); fragment.appendChild(rowDiv); }); output.appendChild(fragment); while (output.children.length > MAX_OUTPUT_LINES) { output.removeChild(output.firstChild); outputMessages.shift(); outputTrimOffset++; } output.scrollTop = output.scrollHeight; if (pendingMessages.length > 0) scheduleOutputUpdate(); }
 
@@ -318,16 +377,43 @@ function initTerminal() { const currentThemeName = document.getElementById('them
 // ================== PROCESSING PIPELINE ==================
 function escapeHtml(text) { return text.replace(/[&<>"]/g, function(tag) { const chars = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }; return chars[tag] || tag; }); }
 function ansiToHtml(text) { const ansiRegex = /\x1b\[([0-9;]*)m/g; let match; let lastIndex = 0; let html = ''; const openTags = []; const colors = [ '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff' ]; while ((match = ansiRegex.exec(text)) !== null) { html += text.substring(lastIndex, match.index); lastIndex = match.index + match[0].length; const codes = match[1].split(';').map(Number).filter(n => !isNaN(n)); if (codes.length === 0) { while(openTags.length) { html += '</span>'; openTags.pop(); } continue; } let style = ''; for(let i = 0; i < codes.length; i++) { const code = codes[i]; if (code === 0) { style = ''; while(openTags.length) { html += '</span>'; openTags.pop(); } } else if (code === 1) { style += 'font-weight:bold;'; } else if (code >= 30 && code <= 37) { style += `color:${colors[code-30]};`; } else if (code >= 90 && code <= 97) { style += `color:${colors[code-90+8]};`; } else if (code === 38) { if (codes[i+1] === 5) { const c = codes[i+2]; if (c < 16) style += `color:${colors[c]};`; i += 2; } else if (codes[i+1] === 2) { style += `color:rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]});`; i += 4; } } } if (style) { html += `<span style="${style}">`; openTags.push(true); } } html += text.substring(lastIndex); while(openTags.length) { html += '</span>'; openTags.pop(); } return html; }
-function applyHighlight(html) { if (!combinedHighlightRegex) return html; return html.replace(combinedHighlightRegex, function(match, ...groups) { for (let i = 0; i < highlightColorMap.length; i++) { if (groups[i] !== undefined) return `<span style="color:${highlightColorMap[i]};font-weight:bold;">${match}</span>`; } return match; }); }
+function applyHighlightRaw(text) {
+    if (!combinedHighlightRegex) return text;
+    const regex = new RegExp(combinedHighlightRegex.source, combinedHighlightRegex.flags);
+    return text.replace(regex, function(match, ...groups) {
+        for (let i = 0; i < highlightColorMap.length; i++) {
+            if (groups[i] !== undefined) {
+                return `\x00HL${highlightColorMap[i]}\x00${match}\x00HLEND\x00`;
+            }
+        }
+        return match;
+    });
+}
+
 function applyShellHighlight(text) { if (!combinedHighlightRegex) return text; return text.replace(combinedHighlightRegex, function(match, ...groups) { for (let i = 0; i < highlightColorMap.length; i++) { if (groups[i] !== undefined) { return hexToAnsi(highlightColorMap[i]) + match + '\x1b[0m'; } } return match; }); }
-function processLogLine(text) { let line = escapeHtml(text); line = ansiToHtml(line); line = applyHighlight(line); return line; }
+
+/**
+ * @brief Processes a raw log line through the rendering pipeline:
+ *        1. Apply highlight rules on raw text (sentinel markers)
+ *        2. HTML-escape + ANSI-to-HTML conversion
+ *        3. Replace sentinel markers with actual HTML span tags
+ *        This order ensures highlight patterns containing HTML-special
+ *        characters (e.g. >>>, <<<) are matched before escaping.
+ */
+function processLogLine(text) {
+    let line = applyHighlightRaw(text);
+    line = ansiToHtml(escapeHtml(line));
+    line = line.replace(/\x00HL([^\x00]*)\x00([^\x00]*?)\x00HLEND\x00/g,
+        '<span style="color:$1;font-weight:bold;">$2</span>');
+    return line;
+}
 function hexToAnsi(hex) { const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex); if (!result) return ''; const r = parseInt(result[1], 16); const g = parseInt(result[2], 16); const b = parseInt(result[3], 16); return `\x1b[1;38;2;${r};${g};${b}m`; }
 function updateHighlightRules(lines) { let rules = lines.map(line => { const parts = line.split(':'); if (parts.length < 2) return null; try { return { regexStr: parts[0], color: parts.slice(1).join(':') }; } catch (e) { return null; } }).filter(r => r !== null); try { const regexParts = rules.map(r => `(${r.regexStr})`); highlightColorMap = rules.map(r => r.color); if (regexParts.length > 0) { combinedHighlightRegex = new RegExp(regexParts.join('|'), 'gi'); } else { combinedHighlightRegex = null; } } catch (e) { combinedHighlightRegex = null; } }
 function addToHistory(command) { if (!command || command.trim() === '' || shellEnabled) return; command = command.trim(); if (historyList.length > 0 && historyList[historyList.length - 1] === command) return; historyList.push(command); if (historyList.length > 100) historyList.shift(); historyIndex = historyList.length; }
 function navigateHistory(direction) { if (historyList.length === 0 || shellEnabled) return; historyIndex = Math.max(0, Math.min(historyList.length - 1, historyIndex + direction)); document.getElementById('input').value = historyList[historyIndex]; }
 function sendData() { if (shellEnabled) return; const input = document.getElementById('input'); let data = input.value; if (data === '') return; const suffixSelect = document.getElementById('suffix-select'); if (suffixSelect) { const suffixVal = suffixSelect.value; if (suffixVal === '\\n') { data += '\n'; } else if (suffixVal === '\\r\\n') { data += '\r\n'; } } const formData = new FormData(); formData.append('data', data); fetch('/send', { method: 'POST', body: formData }).then(r => r.json()).then(res => { if (res.status === 'ok') { addToHistory(input.value); input.value = ''; historyIndex = historyList.length; } else { alert('Send failed: ' + res.message); } }); }
 function handleInputKeydown(event) { if (event.key === 'Tab') { if (!shellEnabled) { event.preventDefault(); const formData = new FormData(); formData.append('data', '\t'); fetch('/send', { method: 'POST', body: formData }); } return; } if (shellEnabled) return; if (event.key === 'Enter') { event.preventDefault(); sendData(); } else if (event.key === 'ArrowUp') { event.preventDefault(); navigateHistory(-1); } else if (event.key === 'ArrowDown') { event.preventDefault(); navigateHistory(1); } }
-function exportLog() { let content = ""; if (shellEnabled && term) { const buffer = term.buffer.active; const hasTimestamps = timestampEnabled && timeGutter; const tsMap = {}; if (hasTimestamps) { if (timeGutter.markers && timeGutter.markers.length > 0) { timeGutter.markers.forEach(m => { if (!m.marker.isDisposed) { tsMap[m.marker.line] = m.ts; } }); } else if (timeGutter.lineTimestamps) { timeGutter.lineTimestamps.forEach((ts, index) => { if (ts) tsMap[index] = ts; }); } } let mergedLines = []; for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { let lineText = line.translateToString(true); if (line.isWrapped && mergedLines.length > 0) { mergedLines[mergedLines.length - 1].text += lineText; } else { let ts = hasTimestamps ? (tsMap[i] || '') : ''; mergedLines.push({ text: lineText, ts: ts }); } } } mergedLines.forEach(item => { if (item.ts) { content += `[${item.ts}] ${item.text}\n`; } else { content += `${item.text}\n`; } }); content = content.trimEnd(); } else { outputMessages.forEach(msg => { content += msg + "\n"; }); } if (!content.trim()) return alert("No data to export."); const blob = new Blob([content], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.log`; a.click(); URL.revokeObjectURL(url); }
+function exportLog() { let content = ""; if (shellEnabled && term) { const buffer = term.buffer.active; const hasTimestamps = timestampEnabled && timeGutter; const tsMap = {}; if (hasTimestamps) { if (timeGutter.markers && timeGutter.markers.length > 0) { timeGutter.markers.forEach(m => { if (!m.marker.isDisposed) { tsMap[m.marker.line] = m.ts; } }); } else if (timeGutter.lineTimestamps) { timeGutter.lineTimestamps.forEach((ts, index) => { if (ts) tsMap[index] = ts; }); } } let mergedLines = []; for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { let lineText = line.translateToString(true); if (line.isWrapped && mergedLines.length > 0) { mergedLines[mergedLines.length - 1].text += lineText; } else { let ts = hasTimestamps ? (tsMap[i] || '') : ''; mergedLines.push({ text: lineText, ts: ts }); } } } mergedLines.forEach(item => { if (item.ts) { content += `[${item.ts}] ${item.text}\n`; } else { content += `${item.text}\n`; } }); content = content.trimEnd(); } else { outputMessages.forEach(msg => { content += msg + "\n"; }); } if (!content.trim()) return alert("No data to export."); const defaultName = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.log`; showExportDialog(content, defaultName); }
 function rerenderAllOutput() { const output = document.getElementById('output'); output.innerHTML = ''; outputMessages.forEach(msg => { const div = document.createElement('div'); div.innerHTML = processLogLine(msg); output.appendChild(div); }); }
 function clearOutput(sendClear = true) { if (sendClear) fetch('/clear', { method: 'POST' }); if (shellEnabled && term) { term.clear(); if (timeGutter) timeGutter.reset(); } else { document.getElementById('output').innerHTML = ''; pendingMessages = []; outputMessages = []; outputTrimOffset = 0; } filterOutput.innerHTML = ''; }
 function updateConnectionStatus(connected) { isConnected = connected; const status = document.getElementById('connection-status'); status.textContent = connected ? 'Connected' : 'Disconnected'; status.className = connected ? 'connected' : ''; }
@@ -337,4 +423,60 @@ function updateShellStatus(enabled) { shellEnabled = enabled; document.getElemen
 function showPortSelection(ports) { const modalBody = document.getElementById('modal-body'); if (ports.length === 0) { modalBody.innerHTML = `<p>No available ports.</p>`; return; } modalBody.innerHTML = `<h3>Select Port</h3><div class="port-list"></div>`; const list = modalBody.querySelector('.port-list'); ports.forEach(port => { const btn = document.createElement('button'); btn.className = 'tool-btn'; btn.style.margin = '5px'; btn.textContent = port; btn.onclick = () => { document.getElementById('port-input').value = port; updatePortInfo(port, document.getElementById('baud-input').value); saveConfigSilently(); closeModal(); }; list.appendChild(btn); }); }
 function showPortSelectionError(msg) { document.getElementById('modal-body').innerHTML = `<p style="color:red;">Error: ${msg}</p>`; }
 function closeModal() { document.getElementById('modal').style.display = 'none'; }
+
+async function showExportDialog(content, defaultName) {
+    try {
+        const handle = await window.showSaveFilePicker({
+            suggestedName: defaultName,
+            types: [{ description: 'Log Files', accept: { 'text/plain': ['.log', '.txt'] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(content);
+        await writable.close();
+        const dir = handle.name ? '' : '';
+        localStorage.setItem('exportLogDir', '');
+    } catch (err) {
+        if (err.name === 'AbortError') return;
+        showExportDialogFallback(content, defaultName);
+    }
+}
+
+function showExportDialogFallback(content, defaultName) {
+    const lastDir = localStorage.getItem('exportLogDir') || '';
+    const defaultPath = lastDir ? `${lastDir.replace(/[\\/]$/, '')}/${defaultName}` : defaultName;
+    const modalBody = document.getElementById('modal-body');
+    modalBody.innerHTML = `
+        <h3>Export Log</h3>
+        <div style="margin: 15px 0;">
+            <label style="display: block; margin-bottom: 5px; font-size: 12px;">Save to:</label>
+            <input type="text" id="export-path-input" value="${escapeHtml(defaultPath)}" style="width: 100%; padding: 6px; box-sizing: border-box; font-family: monospace; font-size: 12px;">
+        </div>
+        <div style="display: flex; gap: 10px; justify-content: flex-end;">
+            <button id="export-cancel-btn" class="tool-btn">Cancel</button>
+            <button id="export-save-btn" class="action-btn">Save</button>
+        </div>
+        <div id="export-msg" style="margin-top: 10px; font-size: 12px;"></div>
+    `;
+    document.getElementById('modal').style.display = 'block';
+    document.getElementById('export-cancel-btn').addEventListener('click', closeModal);
+    document.getElementById('export-save-btn').addEventListener('click', () => doExportLog(content));
+    document.getElementById('export-path-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') doExportLog(content); });
+    document.getElementById('export-path-input').focus();
+    document.getElementById('export-path-input').select();
+}
+
+function doExportLog(content) {
+    const pathInput = document.getElementById('export-path-input');
+    const msgEl = document.getElementById('export-msg');
+    const path = pathInput.value.trim();
+    if (!path) { msgEl.innerHTML = '<span style="color:var(--danger-color);">Please enter a file path.</span>'; return; }
+    const dir = path.replace(/[\\/][^\\/]*$/, '') || '.';
+    localStorage.setItem('exportLogDir', dir);
+    msgEl.innerHTML = '<span style="color:var(--warning-color);">Saving...</span>';
+    fetch('/exportlog', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({path: path, content: content}) })
+        .then(r => r.json()).then(data => {
+            if (data.status === 'ok') { msgEl.innerHTML = `<span style="color:var(--success-color);">Saved to: ${escapeHtml(data.path)}</span>`; setTimeout(closeModal, 1500); }
+            else { msgEl.innerHTML = `<span style="color:var(--danger-color);">Error: ${escapeHtml(data.message)}</span>`; }
+        }).catch(err => { msgEl.innerHTML = `<span style="color:var(--danger-color);">Error: ${escapeHtml(err.message)}</span>`; });
+}
 

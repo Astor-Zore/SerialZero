@@ -222,7 +222,7 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
 #color-picker::-webkit-color-swatch-wrapper { padding: 0; }
 #color-picker::-webkit-color-swatch { border: none; border-radius: 2px; }
 .highlight-input-wrapper { flex: 1; display: flex; border: 1px solid var(--border-color); border-radius: 2px; overflow: hidden; background-color: var(--bg-primary); }
-#highlight-preview-strip { width: 8px; background-color: var(--bg-secondary); border-right: 1px solid var(--border-color); overflow-y: auto; overflow-x: hidden; scrollbar-width: none; flex-shrink: 0; }
+#highlight-preview-strip { width: 8px; background-color: var(--bg-secondary); border-right: 1px solid var(--border-color); overflow-y: auto; overflow-x: hidden; scrollbar-width: none; flex-shrink: 0; padding-top: 4px; }
 #highlight-preview-strip::-webkit-scrollbar { display: none; }
 .preview-color-block { height: 20px; width: 100%; margin: 0; box-sizing: border-box; border-bottom: 1px solid rgba(0,0,0,0.1); }
 #highlight-input { flex: 1; border: none; outline: none; resize: none; padding: 4px; font-family: 'Courier New', monospace; font-size: 12px; background-color: transparent; color: var(--text-primary); line-height: 20px; }
@@ -279,6 +279,12 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
 .flash-highlight { animation: flash-anim 1s ease-out; }
 @keyframes flash-anim { 0% { background-color: rgba(11, 99, 156, 0.6); } 100% { background-color: transparent; } }
 
+.filter-match {
+    background-color: rgba(255, 200, 0, 0.35);
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
 /* Input Area Specifics */
 .input-area {
     background-color: var(--bg-secondary);
@@ -289,8 +295,8 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     height: 30px;
     transition: height 0.2s ease;
 }
-.input-area.collapsed { height: 25px; }
-.input-area:not(.collapsed) { height: 70px; }
+.input-area.collapsed { height: 25px; overflow: hidden; }
+.input-area:not(.collapsed) { height: 100px; overflow: visible; }
 .input-area .panel-content { display: flex; flex-direction: row !important; align-items: center; gap: 10px; height: 100%; padding: 10px; box-sizing: border-box; width: 100%; }
 .input-area #input { flex: 1; width: 0; min-width: 50px; background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px; border-radius: 2px; font-family: monospace; font-size: 12px; height: 25px; box-sizing: border-box; }
 #send-btn { height: 25px; padding: 4px 10px; font-size: 12px; border-radius: 3px; flex-shrink: 0; cursor: pointer; }

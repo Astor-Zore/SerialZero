@@ -351,6 +351,7 @@ func (a *App) runWebServer() {
 	r.POST("/listscripts", a.handleListScripts)
 	r.POST("/runscript", a.handleRunScript)
 	r.POST("/stopscript", a.handleStopScript)
+	r.POST("/exportlog", a.handleExportLog)
 
 	a.httpServer = &http.Server{Addr: ":8080", Handler: r}
 	go func() {
@@ -948,6 +949,37 @@ func (a *App) handleStopScript(c *gin.Context) {
 		a.scriptEngine.Stop()
 	}
 	c.JSON(200, gin.H{"status": "ok"})
+}
+
+/**
+ * @brief Handles log export to a user-specified file path.
+ */
+func (a *App) handleExportLog(c *gin.Context) {
+	var req struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": "Invalid request: " + err.Error()})
+		return
+	}
+	if req.Path == "" {
+		c.JSON(200, gin.H{"status": "error", "message": "File path is required"})
+		return
+	}
+
+	dir := filepath.Dir(req.Path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": "Failed to create directory: " + err.Error()})
+		return
+	}
+
+	if err := os.WriteFile(req.Path, []byte(req.Content), 0644); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": "Failed to write file: " + err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"status": "ok", "path": req.Path})
 }
 
 /**
