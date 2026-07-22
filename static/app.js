@@ -205,7 +205,7 @@ function setupFilterPanel() {
     filterInput.addEventListener('input', (e) => {
         const pattern = e.target.value.trim();
         try { filterRegex = new RegExp(pattern, 'gi'); filterInput.style.borderColor = pattern ? 'var(--accent-color)' : 'var(--border-color)'; } catch (e) { filterRegex = null; filterInput.style.borderColor = 'var(--danger-color)'; }
-        runFullFilter();
+        scheduleFilterUpdate();
     });
 
     applyBtn.addEventListener('click', (e) => {
@@ -266,59 +266,190 @@ function setupSpecificLogFilter(tabId) {
     input.addEventListener('input', (e) => {
         const pattern = e.target.value.trim();
         try { regex = new RegExp(pattern, 'gi'); input.style.borderColor = pattern ? 'var(--accent-color)' : 'var(--border-color)'; } catch (e) { regex = null; input.style.borderColor = 'var(--danger-color)'; }
-        if (isEnabled) runFullLogFilter(regex, outputEl, tabId);
+        if (isEnabled) scheduleLogFilterUpdate(regex, outputEl, tabId);
     });
     toggleBtn.addEventListener('click', (e) => { isEnabled = !isEnabled; toggleBtn.textContent = isEnabled ? 'ON' : 'OFF'; toggleBtn.style.backgroundColor = isEnabled ? 'var(--success-color)' : ''; if (isEnabled) runFullLogFilter(regex, outputEl, tabId); });
     clearBtn.addEventListener('click', () => { outputEl.innerHTML = ''; });
     outputEl.addEventListener('click', (e) => { const row = e.target.closest('.filter-row'); if (row) { const lineIndex = parseInt(row.dataset.lineIndex); if (!isNaN(lineIndex)) jumpToLine(lineIndex, tabId); } });
 }
 
-function highlightFilterMatches(text, regex) {
-    if (!regex) return text;
-    if (!regex.source || regex.source === '(?:)') return text;
-    const freshRegex = new RegExp(regex.source, regex.flags);
-    let result = '';
-    let lastIndex = 0;
-    let match;
-    while ((match = freshRegex.exec(text)) !== null) {
-        result += text.substring(lastIndex, match.index);
-        result += `\x00FM\x00${match[0]}\x00FMEND\x00`;
-        lastIndex = match.index + match[0].length;
-        if (match[0].length === 0) {
-            if (freshRegex.lastIndex >= text.length) break;
-            freshRegex.lastIndex++;
+/**
+ * @brief Single-pass merge processor for filter panel rendering.
+ *        Collects all highlight-rule and filter-regex matches on the raw
+ *        text, merges overlapping intervals, assigns three sentinel types
+ *        (HL=highlight only, FM=filter only, CB=combined both), then
+ *        escapes, converts ANSI, and replaces sentinels with HTML.
+ *        This avoids nested-sentinel corruption when a word matches both.
+ */
+function processFilterLine(text, filterRegex) {
+    let hlMatches = [];
+    let fmMatches = [];
+
+    if (combinedHighlightRegex) {
+        const hlRegex = new RegExp(combinedHighlightRegex.source, combinedHighlightRegex.flags);
+        let match;
+        while ((match = hlRegex.exec(text)) !== null) {
+            for (let i = 0; i < highlightColorMap.length; i++) {
+                if (match[i + 1] !== undefined) {
+                    hlMatches.push({ start: match.index, end: match.index + match[0].length, color: highlightColorMap[i] });
+                    break;
+                }
+            }
+            if (match[0].length === 0) { if (hlRegex.lastIndex >= text.length) break; hlRegex.lastIndex++; }
         }
     }
-    result += text.substring(lastIndex);
+
+    if (filterRegex && filterRegex.source && filterRegex.source !== '(?:)') {
+        const fmRegex = new RegExp(filterRegex.source, filterRegex.flags);
+        let match;
+        while ((match = fmRegex.exec(text)) !== null) {
+            if (match[0].length > 0) {
+                fmMatches.push({ start: match.index, end: match.index + match[0].length });
+            }
+            if (match[0].length === 0) { if (fmRegex.lastIndex >= text.length) break; fmRegex.lastIndex++; }
+        }
+    }
+
+    if (hlMatches.length === 0 && fmMatches.length === 0) {
+        return ansiToHtml(escapeHtml(text));
+    }
+
+    let allMatches = [];
+    for (const m of hlMatches) allMatches.push({ start: m.start, end: m.end, isHL: true, color: m.color });
+    for (const m of fmMatches) allMatches.push({ start: m.start, end: m.end, isFM: true });
+    allMatches.sort((a, b) => a.start - b.start || a.end - b.end);
+
+    let merged = [];
+    let i = 0;
+    while (i < allMatches.length) {
+        let cur = allMatches[i];
+        let maxEnd = cur.end;
+        let hasHL = cur.isHL;
+        let hasFM = cur.isFM;
+        let hlColor = cur.isHL ? cur.color : null;
+        let j = i + 1;
+        while (j < allMatches.length && allMatches[j].start < maxEnd) {
+            maxEnd = Math.max(maxEnd, allMatches[j].end);
+            if (allMatches[j].isHL && !hasHL) { hasHL = true; hlColor = allMatches[j].color; }
+            else if (allMatches[j].isHL) { hlColor = allMatches[j].color; }
+            if (allMatches[j].isFM) hasFM = true;
+            j++;
+        }
+        merged.push({ start: cur.start, end: maxEnd, hasHL, hasFM, hlColor });
+        i = j;
+    }
+
+    let result = '';
+    let lastIdx = 0;
+    for (const m of merged) {
+        result += text.substring(lastIdx, m.start);
+        const segment = text.substring(m.start, m.end);
+        if (m.hasHL && m.hasFM) {
+            result += `\x00CB${m.hlColor}\x00${segment}\x00CBEND\x00`;
+        } else if (m.hasHL) {
+            result += `\x00HL${m.hlColor}\x00${segment}\x00HLEND\x00`;
+        } else {
+            result += `\x00FM\x00${segment}\x00FMEND\x00`;
+        }
+        lastIdx = m.end;
+    }
+    result += text.substring(lastIdx);
+
+    result = ansiToHtml(escapeHtml(result));
+    result = result.replace(/\x00HL([^\x00]*)\x00([^\x00]*?)\x00HLEND\x00/g,
+        '<span style="color:$1;font-weight:bold;">$2</span>');
+    result = result.replace(/\x00FM\x00([^\x00]*?)\x00FMEND\x00/g,
+        '<mark class="filter-match">$1</mark>');
+    result = result.replace(/\x00CB([^\x00]*)\x00([^\x00]*?)\x00CBEND\x00/g,
+        '<mark class="filter-match"><span style="color:$1;font-weight:bold;">$2</span></mark>');
     return result;
 }
 
 /**
- * @brief Processes a line for the filter panel: applies highlight rules
- *        and optional filter match highlighting using sentinel markers,
- *        then escapes, converts ANSI, and replaces markers with HTML.
+ * @brief Builds a single filter-row HTML string. Used by batch renderers.
  */
-function processFilterLine(text, filterRegex) {
-    let line = applyHighlightRaw(text);
-    if (filterRegex && filterRegex.source && filterRegex.source !== '(?:)') {
-        line = highlightFilterMatches(line, filterRegex);
-    }
-    line = ansiToHtml(escapeHtml(line));
-    line = line.replace(/\x00HL([^\x00]*)\x00([^\x00]*?)\x00HLEND\x00/g,
-        '<span style="color:$1;font-weight:bold;">$2</span>');
-    line = line.replace(/\x00FM\x00([^\x00]*?)\x00FMEND\x00/g,
-        '<mark class="filter-match">$1</mark>');
-    return line;
+function buildFilterRowHTML(text, lineIndex, filterRegex) {
+    const numWidth = getComputedStyle(document.documentElement).getPropertyValue('--line-num-width').trim();
+    const lineNum = lineIndex + 1;
+    const body = processFilterLine(text, filterRegex);
+    return `<div class="filter-row" data-line-index="${lineIndex}"><span class="filter-line-num" style="width:${numWidth}">${lineNum}</span><span class="filter-text">${body}</span></div>`;
 }
 
-function runFullLogFilter(regex, outputEl, tabId) { outputEl.innerHTML = ''; if (!regex) return; const tabData = logTabs[tabId]; if (!tabData) return; updateGlobalLineNumWidth(tabData.messages.length + tabData.trimOffset); tabData.messages.forEach((msg, index) => { if (regex.test(msg)) { appendToSpecificFilterOutput(msg, index + tabData.trimOffset, outputEl, tabId, regex); regex.lastIndex = 0; } }); }
 function getDigitWidth(digits) { return String(digits).length * 8 + 16; }
 function updateGlobalLineNumWidth(maxCount) { const width = getDigitWidth(maxCount); document.documentElement.style.setProperty('--line-num-width', `${width}px`); document.querySelectorAll('.filter-line-num').forEach(el => { el.style.width = `${width}px`; }); document.querySelectorAll('.log-row-num').forEach(el => { el.style.width = `${width}px`; }); }
 function stripAnsi(str) { return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); }
-function scheduleFilterUpdate() { if (!isFilterEnabled) return; if (filterUpdateTimer) clearTimeout(filterUpdateTimer); filterUpdateTimer = setTimeout(() => { runFullFilter(); filterUpdateTimer = null; }, 100); }
+
+let filterRenderGen = 0;
+
+function scheduleFilterUpdate() { if (!isFilterEnabled) return; if (filterUpdateTimer) clearTimeout(filterUpdateTimer); filterUpdateTimer = setTimeout(() => { runFullFilter(); filterUpdateTimer = null; }, 500); }
+
+function scheduleLogFilterUpdate(regex, outputEl, tabId) {
+    const panel = outputEl.parentElement;
+    if (!panel || panel.classList.contains('collapsed')) return;
+    if (filterUpdateTimer) clearTimeout(filterUpdateTimer);
+    filterUpdateTimer = setTimeout(() => { runFullLogFilter(regex, outputEl, tabId); filterUpdateTimer = null; }, 500);
+}
+
 function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType, filterRegex) { const div = document.createElement('div'); div.className = 'filter-row'; div.dataset.lineIndex = lineIndex; const numSpan = document.createElement('span'); numSpan.className = 'filter-line-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = lineIndex + 1; const textSpan = document.createElement('span'); textSpan.className = 'filter-text'; textSpan.innerHTML = processFilterLine(text, filterRegex); div.appendChild(numSpan); div.appendChild(textSpan); outputEl.appendChild(div); if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) { outputEl.scrollTop = outputEl.scrollHeight; } }
+
 function jumpToLine(index, type) { if (type.startsWith('log_')) { let output, trimOffset; output = document.getElementById(`${type}_output`); trimOffset = logTabs[type].trimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } else if (shellEnabled && term) { const currentY = term.buffer.active.viewportY; term.scrollLines(index - currentY); if (timeGutter) timeGutter.flashLine(index); } else { let output = document.getElementById('output'); let trimOffset = outputTrimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } }
-function runFullFilter() { filterOutput.innerHTML = ''; if (!filterRegex) return; if (!isFilterEnabled) return; if (shellEnabled && term) { const buffer = term.buffer.active; updateGlobalLineNumWidth(buffer.length); for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { const text = line.translateToString(true); const cleanText = stripAnsi(text); if (filterRegex.test(cleanText)) { appendToSpecificFilterOutput(cleanText, i, filterOutput, 'main', filterRegex); filterRegex.lastIndex = 0; } } } } else { updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset); outputMessages.forEach((msg, index) => { if (filterRegex.test(msg)) { appendToSpecificFilterOutput(msg, index + outputTrimOffset, filterOutput, 'main', filterRegex); filterRegex.lastIndex = 0; } }); } }
+
+function runFullFilter() {
+    if (!filterRegex) return;
+    if (!isFilterEnabled) return;
+    const gen = ++filterRenderGen;
+    updateGlobalLineNumWidth(0);
+    let html = '';
+    if (shellEnabled && term) {
+        const buffer = term.buffer.active;
+        updateGlobalLineNumWidth(buffer.length);
+        for (let i = 0; i < buffer.length; i++) {
+            if (gen !== filterRenderGen) return;
+            const line = buffer.getLine(i);
+            if (line) {
+                const text = line.translateToString(true);
+                const cleanText = stripAnsi(text);
+                if (filterRegex.test(cleanText)) {
+                    html += buildFilterRowHTML(cleanText, i, filterRegex);
+                    filterRegex.lastIndex = 0;
+                }
+            }
+        }
+    } else {
+        updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset);
+        for (let j = 0; j < outputMessages.length; j++) {
+            if (gen !== filterRenderGen) return;
+            const msg = outputMessages[j];
+            if (filterRegex.test(msg)) {
+                html += buildFilterRowHTML(msg, j + outputTrimOffset, filterRegex);
+                filterRegex.lastIndex = 0;
+            }
+        }
+    }
+    if (gen !== filterRenderGen) return;
+    filterOutput.innerHTML = html;
+    filterOutput.scrollTop = filterOutput.scrollHeight;
+}
+
+function runFullLogFilter(regex, outputEl, tabId) {
+    if (!regex) return;
+    const gen = ++filterRenderGen;
+    const tabData = logTabs[tabId];
+    if (!tabData) return;
+    updateGlobalLineNumWidth(tabData.messages.length + tabData.trimOffset);
+    let html = '';
+    for (let j = 0; j < tabData.messages.length; j++) {
+        if (gen !== filterRenderGen) return;
+        const msg = tabData.messages[j];
+        if (regex.test(msg)) {
+            html += buildFilterRowHTML(msg, j + tabData.trimOffset, regex);
+            regex.lastIndex = 0;
+        }
+    }
+    if (gen !== filterRenderGen) return;
+    outputEl.innerHTML = html;
+    outputEl.scrollTop = outputEl.scrollHeight;
+}
 
 // ================= TIME GUTTER =================
 class TimeGutter {
