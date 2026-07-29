@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -102,20 +103,23 @@ type Config struct {
  * @brief App main struct holding application state.
  */
 type App struct {
-	config Config
-	port *serial.Port
-	isConnected bool
-	clients map[string]*Client
-	clientsMu sync.RWMutex
-	sendHistory []string
-	dataMode string
-	writeChan chan []byte
-	receiveChan chan []byte
-	mu sync.Mutex
-	httpServer *http.Server
-	ctx context.Context
-	cancel context.CancelFunc
-	scriptEngine *ScriptEngine
+	config        Config
+	port          *serial.Port
+	isConnected   bool
+	clients       map[string]*Client
+	clientsMu     sync.RWMutex
+	sendHistory   []string
+	dataMode      string
+	writeChan     chan []byte
+	receiveChan   chan []byte
+	mu            sync.Mutex
+	httpServer    *http.Server
+	ctx           context.Context
+	cancel        context.CancelFunc
+	scriptEngine  *ScriptEngine
+	instancePort  int
+	instanceTitle string
+	configFile    string
 }
 
 /**
@@ -231,25 +235,57 @@ func redirectStdoutToNull() {
 	}
 }
 
+func findAvailablePort(startPort int) (int, error) {
+	for port := startPort; port < startPort+100; port++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			ln.Close()
+			return port, nil
+		}
+	}
+	return 0, fmt.Errorf("no available port in range %d-%d", startPort, startPort+99)
+}
+
 func main() {
 	hideConsole()
 	redirectStdoutToNull()
+
+	instancePort, err := findAvailablePort(8080)
+	if err != nil {
+		log.Fatalf("Failed to find available port: %v", err)
+	}
+	baseConfigFile := filepath.Join(".", "config.toml")
+	runtimeConfigFile := filepath.Join(".", fmt.Sprintf("config_%d.toml", instancePort))
+
+	if _, err := os.Stat(baseConfigFile); err == nil {
+		src, err := os.ReadFile(baseConfigFile)
+		if err == nil {
+			os.WriteFile(runtimeConfigFile, src, 0644)
+		}
+	}
+	instanceTitle := fmt.Sprintf("SerialZero :%d", instancePort)
+
 	ctx, cancel := context.WithCancel(context.Background())
 	app := &App{
-		clients: make(map[string]*Client),
-		sendHistory: []string{},
-		dataMode: "ascii",
-		writeChan: make(chan []byte, 1024),
-		receiveChan: make(chan []byte, 32768),
-		ctx: ctx,
-		cancel: cancel,
+		clients:        make(map[string]*Client),
+		sendHistory:    []string{},
+		dataMode:       "ascii",
+		writeChan:      make(chan []byte, 1024),
+		receiveChan:    make(chan []byte, 32768),
+		ctx:            ctx,
+		cancel:         cancel,
+		instancePort:   instancePort,
+		instanceTitle:  instanceTitle,
+		configFile:     runtimeConfigFile,
 	}
+	defer os.Remove(runtimeConfigFile)
+
 	app.loadConfig()
 	go app.runWebServer()
 	go func() {
 		systray.Run(func() {
 			systray.SetIcon(iconData)
-			systray.SetTooltip("SerialZero - Running")
+			systray.SetTooltip(instanceTitle)
 			mShowConsole := systray.AddMenuItem("Show Console", "Show the console window")
 			systray.AddSeparator()
 			mQuit := systray.AddMenuItem("Quit", "Exit the application")
@@ -277,7 +313,7 @@ func main() {
 	procEnumChildWindows.Call(appHwnd, hideChildCallback, 0)
 
 	// 2. Configure window
-	w.SetTitle("SerialZero")
+	w.SetTitle(instanceTitle)
 	width := 1024
 	height := 768
 
@@ -304,8 +340,8 @@ func main() {
 	}()
 
 	// 5. Navigate and run
-	w.Navigate("http://localhost:8080")
-	go setWindowIcon("SerialZero")
+	w.Navigate(fmt.Sprintf("http://localhost:%d", instancePort))
+	go setWindowIcon(instanceTitle)
 	w.Run()
 	cancel()
 	os.Exit(0)
@@ -353,7 +389,7 @@ func (a *App) runWebServer() {
 	r.POST("/stopscript", a.handleStopScript)
 	r.POST("/exportlog", a.handleExportLog)
 
-	a.httpServer = &http.Server{Addr: ":8080", Handler: r}
+	a.httpServer = &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", a.instancePort), Handler: r}
 	go func() {
 		if err := a.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
@@ -582,7 +618,7 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 	if newConfig.Theme.Name == "" { newConfig.Theme.Name = "Default" }
 
 	a.config = newConfig
-	file, err := os.Create("config.toml")
+	file, err := os.Create(a.configFile)
 	if err != nil {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to create config file: " + err.Error()})
 		return
@@ -591,6 +627,11 @@ func (a *App) handleSaveConfig(c *gin.Context) {
 	if err := toml.NewEncoder(file).Encode(a.config); err != nil {
 		c.JSON(200, gin.H{"status": "error", "message": "Failed to write config: " + err.Error()})
 		return
+	}
+	baseFile, err := os.Create("config.toml")
+	if err == nil {
+		defer baseFile.Close()
+		toml.NewEncoder(baseFile).Encode(a.config)
 	}
 	a.broadcast(map[string]interface{}{"type": "config", "config": a.config, "connected": a.isConnected, "mode": a.dataMode})
 	c.JSON(200, gin.H{"status": "ok"})
@@ -770,7 +811,7 @@ func (a *App) processAndBroadcast(data []byte) {
 }
 
 func (a *App) loadConfig() {
-	if _, err := toml.DecodeFile("config.toml", &a.config); err != nil {
+	if _, err := toml.DecodeFile(a.configFile, &a.config); err != nil {
 		a.config.Serial.Port = "COM1"
 		a.config.Serial.Baud = 9600
 		a.config.Serial.Databits = 8

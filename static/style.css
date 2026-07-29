@@ -194,8 +194,10 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     outline: none;
     background-color: var(--bg-primary);
     color: var(--text-primary);
+    content-visibility: auto;
+    contain-intrinsic-size: auto 100vh;
 }
-.log-row { display: flex; border-bottom: 1px solid rgba(255,255,255,0.02); min-height: 1.2em; }
+.log-row { display: flex; border-bottom: 1px solid rgba(255,255,255,0.02); min-height: 1.2em; contain: layout style; }
 .log-row-num {
     flex-shrink: 0; text-align: right; padding: 0 8px; color: #555; font-size: 12px;
     user-select: none; border-right: 1px solid var(--border-color);
@@ -213,6 +215,8 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     background-color: var(--bg-primary);
     color: var(--text-primary);
     padding: 0 15px;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 100vh;
 }
 .output span[style*="color"] { font-weight: bold; }
 
@@ -270,6 +274,8 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     padding: 0;
     font-size: 13px;
     white-space: pre-wrap;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 100vh;
 }
 
 .filter-row { display: flex; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid rgba(255,255,255,0.03); }
