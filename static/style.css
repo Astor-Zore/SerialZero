@@ -40,7 +40,7 @@ body {
 /* Custom Title Bar */
 .resize-handle {
     position: fixed;
-    z-index: 10000;
+    z-index: 10;
     -webkit-app-region: no-drag;
 }
 .resize-n, .resize-s { left: 0; right: 0; height: 5px; }
@@ -220,7 +220,7 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     box-sizing: border-box;
 }
 .output-container { flex: 1; padding: 8px; overflow: hidden; display: flex; flex-direction: column; }
-.shell-area { flex: 1; display: none; flex-direction: row; overflow: hidden; position: relative; background-color: var(--bg-primary); }
+.shell-area { flex: 1; display: none; flex-direction: row; overflow: hidden; position: relative; background-color: var(--bg-primary); padding-right: 6px; }
 
 /* Time Gutter Design: Excel Style */
 .time-gutter {
