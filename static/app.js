@@ -68,6 +68,8 @@ document.addEventListener('DOMContentLoaded', function() {
     listScripts();
     setupFilterPanel();
     setupHighlightTools();
+    setupTitlebar();
+    setupResizeHandles();
 });
 
 // ================= HIGHLIGHT TOOLS LOGIC =================
@@ -131,7 +133,8 @@ function switchTab(tabId) {
         const tabData = logTabs[tabId];
         if (tabData) {
             _lastGlobalLineNumWidth = 0;
-            updateGlobalLineNumWidth(tabData.messages.length + tabData.trimOffset);
+            const count = tabData.view ? tabData.view.totalLines : 0;
+            updateGlobalLineNumWidth(count);
         }
     }
 }
@@ -141,7 +144,8 @@ function createLogTab(fileName) {
     const logContainer = document.getElementById('log-views-container');
     const tabId = `log_${Date.now()}`;
     const newTab = document.createElement('div'); newTab.className = 'tab'; newTab.dataset.tab = tabId;
-    newTab.innerHTML = `${fileName} <span class="tab-close">×</span>`;
+    newTab.title = fileName;
+    newTab.innerHTML = `<span class="tab-name">${fileName}</span><span class="tab-close">×</span>`;
     tabBar.appendChild(newTab);
     const currentFont = document.getElementById('font-input').value;
     const currentFontSize = document.getElementById('fontsize-input').value;
@@ -152,13 +156,14 @@ function createLogTab(fileName) {
         <div id="${tabId}_filter_panel" class="filter-panel collapsed"> <div class="filter-resize-handle"></div> <button class="toggle-panel-btn">▼ Filter</button> <div class="panel-content"> <div class="filter-controls"> <input type="text" id="${tabId}_filter_input" placeholder="Search Log..."> <button id="${tabId}_filter_toggle" class="tool-btn" style="width: 50px;">OFF</button> <button id="${tabId}_filter_clear" class="tool-btn" style="width: 50px;">Clear</button> </div> <div id="${tabId}_filter_output" class="filter-output" style="font-family: ${fullFont}; font-size: var(--log-font-size);"></div> </div> </div>
     `;
     logContainer.appendChild(logWrapper);
-    logTabs[tabId] = { messages: [], trimOffset: 0, name: fileName };
+    logTabs[tabId] = { view: null, name: fileName };
     setupSpecificLogFilter(tabId);
     switchTab(tabId);
     return tabId;
 }
 
 function closeLogTab(tabId) {
+    if (logTabs[tabId] && logTabs[tabId].view) logTabs[tabId].view.destroy();
     const tabBtn = document.querySelector(`.tab[data-tab="${tabId}"]`); if (tabBtn) tabBtn.remove();
     const view = document.getElementById(tabId); if (view) view.remove();
     delete logTabs[tabId]; if (currentTab === tabId) switchTab('main');
@@ -400,7 +405,7 @@ function scheduleLogFilterUpdate(regex, outputEl, tabId) {
 
 function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType, filterRegex) { const div = document.createElement('div'); div.className = 'filter-row'; div.dataset.lineIndex = lineIndex; const numSpan = document.createElement('span'); numSpan.className = 'filter-line-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = lineIndex + 1; const textSpan = document.createElement('span'); textSpan.className = 'filter-text'; textSpan.innerHTML = processFilterLine(text, filterRegex); div.appendChild(numSpan); div.appendChild(textSpan); outputEl.appendChild(div); if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) { outputEl.scrollTop = outputEl.scrollHeight; } }
 
-function jumpToLine(index, type) { if (type.startsWith('log_')) { let output, trimOffset; output = document.getElementById(`${type}_output`); trimOffset = logTabs[type].trimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } else if (shellEnabled && term) { const currentY = term.buffer.active.viewportY; term.scrollLines(index - currentY); if (timeGutter) timeGutter.flashLine(index); } else { let output = document.getElementById('output'); let trimOffset = outputTrimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } }
+function jumpToLine(index, type) { if (type.startsWith('log_')) { const tabData = logTabs[type]; if (tabData && tabData.view) { tabData.view.jumpToLine(index); } } else if (shellEnabled && term) { const currentY = term.buffer.active.viewportY; term.scrollLines(index - currentY); if (timeGutter) timeGutter.flashLine(index); } else { let output = document.getElementById('output'); let trimOffset = outputTrimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } }
 
 function runFullFilter() {
     if (!filterRegex) return;
@@ -441,22 +446,13 @@ function runFullFilter() {
 
 function runFullLogFilter(regex, outputEl, tabId) {
     if (!regex) return;
-    const gen = ++filterRenderGen;
     const tabData = logTabs[tabId];
     if (!tabData) return;
-    updateGlobalLineNumWidth(tabData.messages.length + tabData.trimOffset);
-    let parts = [];
-    for (let j = 0; j < tabData.messages.length; j++) {
-        if (gen !== filterRenderGen) return;
-        const msg = tabData.messages[j];
-        if (regex.test(msg)) {
-            parts.push(buildFilterRowHTML(msg, j + tabData.trimOffset, regex));
-            regex.lastIndex = 0;
-        }
+    if (tabData.view) {
+        tabData.view.search(regex);
+    } else {
+        outputEl.innerHTML = '';
     }
-    if (gen !== filterRenderGen) return;
-    outputEl.innerHTML = parts.join('');
-    outputEl.scrollTop = outputEl.scrollHeight;
 }
 
 // ================= TIME GUTTER =================
@@ -477,8 +473,121 @@ function syncShellUI(enabled) { if (enabled) { outputContainer.style.display = '
 function updateGutterVisibility() { if (!timeGutterEl) return; timeGutterEl.style.display = 'block'; if(timeGutter) timeGutter.render(); if(term && fitAddon) fitAddon.fit(); }
 function initWebSocket() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => console.log('WebSocket connected'); ws.onmessage = (event) => { try { const data = JSON.parse(event.data); switch(data.type) { case 'message': if (shellEnabled) { if (term) { let msg = data.message.replace(/\r?\n/g, '\r\n'); term.write(applyShellHighlight(msg)); scheduleFilterUpdate(); } else addToOutput(data.message); } else { addToOutput(data.message); } break; case 'script_log': appendToScriptConsole(data.message); break; case 'config': if (data.config) updateConfig(data.config); if (data.connected !== undefined) updateConnectionStatus(data.connected); if (data.mode) updateMode(data.mode); break; case 'status': console.log('Status:', data.message); break; case 'mode': updateMode(data.mode); break; case 'clear': clearOutput(false); break; } } catch (error) { console.error('Parse error:', error); } }; ws.onclose = () => setTimeout(initWebSocket, 1000); ws.onerror = (error) => console.error('WS error:', error); }
 function setupSidebarFocusManagement() { document.querySelectorAll('#sidebar input, #sidebar select, #sidebar textarea').forEach(el => { el.addEventListener('mousedown', function(e) { if (term) term.blur(); }); el.addEventListener('focus', function() { if (term) term.blur(); }); }); }
-function setupEventListeners() { document.getElementById('tab-bar').addEventListener('click', (e) => { const tab = e.target.closest('.tab'); if (tab) { if (e.target.classList.contains('tab-close')) { closeLogTab(tab.dataset.tab); } else { switchTab(tab.dataset.tab); } } }); document.getElementById('connect-btn').addEventListener('click', toggleConnection); document.getElementById('scan-btn').addEventListener('click', scanPorts); document.getElementById('clear-btn').addEventListener('click', () => clearOutput(true)); document.getElementById('export-btn').addEventListener('click', exportLog); document.getElementById('send-btn').addEventListener('click', sendData); document.getElementById('save-config-btn').addEventListener('click', saveConfig); document.getElementById('input').addEventListener('keydown', handleInputKeydown); document.getElementById('toggle-sidebar-btn').addEventListener('click', () => { document.getElementById('sidebar').classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('send-toggle-btn').addEventListener('click', function() { const area = document.getElementById('input-area'); area.classList.toggle('collapsed'); this.textContent = area.classList.contains('collapsed') ? '▼ Send' : '▲ Send'; }); document.getElementById('toggle-script-btn').addEventListener('click', () => { const panel = document.getElementById('script-panel'); panel.classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('refresh-scripts-btn').addEventListener('click', listScripts); document.getElementById('run-script-btn').addEventListener('click', runScript); document.getElementById('stop-script-btn').addEventListener('click', stopScript); document.getElementById('ascii-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('hex-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('timestamp-on').addEventListener('change', function() { if (this.checked) setTimestamp(true); }); document.getElementById('timestamp-off').addEventListener('change', function() { if (this.checked) setTimestamp(false); }); document.getElementById('shell-on').addEventListener('change', function() { if (this.checked) setShellEnabled(true); }); document.getElementById('shell-off').addEventListener('change', function() { if (this.checked) setShellEnabled(false); }); document.getElementById('theme-preset-select').addEventListener('change', handleThemePresetChange); document.getElementById('theme-bg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-fg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-cursor').addEventListener('input', handleCustomThemeChange); document.querySelector('.close').addEventListener('click', closeModal); window.addEventListener('click', (event) => { if (event.target == document.getElementById('modal')) closeModal(); }); document.getElementById('import-log-btn').addEventListener('click', () => { document.getElementById('import-log-input').click(); }); document.getElementById('import-log-input').addEventListener('change', function(e) { if (this.files.length > 0) { handleImportLog(this.files[0]); this.value = ''; } }); }
-function handleImportLog(file) { if (!file) return; const tabId = createLogTab(file.name); const tabData = logTabs[tabId]; const reader = new FileReader(); reader.onload = (e) => { const text = e.target.result; const lines = text.split('\n'); const tsRegex = /^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\s(.*)$/; const numWidth = getDigitWidth(lines.length); updateGlobalLineNumWidth(lines.length); let i = 0; const outputEl = document.getElementById(`${tabId}_output`); function processChunk() { const chunk = lines.slice(i, i + 2000); chunk.forEach(line => { const match = line.match(tsRegex); let content = line.replace(/\r$/, ''); if (match) content = match[2]; tabData.messages.push(content); const rowDiv = document.createElement('div'); rowDiv.className = 'log-row'; const numSpan = document.createElement('div'); numSpan.className = 'log-row-num'; numSpan.textContent = tabData.messages.length; numSpan.style.width = `var(--line-num-width)`; const textSpan = document.createElement('div'); textSpan.className = 'log-row-text'; textSpan.innerHTML = processLogLine(content); rowDiv.appendChild(numSpan); rowDiv.appendChild(textSpan); outputEl.appendChild(rowDiv); }); outputEl.scrollTop = outputEl.scrollHeight; i += 2000; if (i < lines.length) requestAnimationFrame(processChunk); } processChunk(); }; reader.readAsText(file); }
+function setupEventListeners() { document.getElementById('tab-bar').addEventListener('click', (e) => { const tab = e.target.closest('.tab'); if (tab) { if (e.target.classList.contains('tab-close')) { closeLogTab(tab.dataset.tab); } else { switchTab(tab.dataset.tab); } } }); document.getElementById('connect-btn').addEventListener('click', toggleConnection); document.getElementById('scan-btn').addEventListener('click', scanPorts); document.getElementById('clear-btn').addEventListener('click', () => clearOutput(true)); document.getElementById('export-btn').addEventListener('click', exportLog); document.getElementById('send-btn').addEventListener('click', sendData); document.getElementById('save-config-btn').addEventListener('click', saveConfig); document.getElementById('input').addEventListener('keydown', handleInputKeydown); document.getElementById('toggle-sidebar-btn').addEventListener('click', () => { document.getElementById('sidebar').classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('send-toggle-btn').addEventListener('click', function() { const area = document.getElementById('input-area'); area.classList.toggle('collapsed'); this.textContent = area.classList.contains('collapsed') ? '▼ Send' : '▲ Send'; }); document.getElementById('toggle-script-btn').addEventListener('click', () => { const panel = document.getElementById('script-panel'); panel.classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('refresh-scripts-btn').addEventListener('click', listScripts); document.getElementById('run-script-btn').addEventListener('click', runScript); document.getElementById('stop-script-btn').addEventListener('click', stopScript); document.getElementById('ascii-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('hex-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('timestamp-on').addEventListener('change', function() { if (this.checked) setTimestamp(true); }); document.getElementById('timestamp-off').addEventListener('change', function() { if (this.checked) setTimestamp(false); }); document.getElementById('shell-on').addEventListener('change', function() { if (this.checked) setShellEnabled(true); }); document.getElementById('shell-off').addEventListener('change', function() { if (this.checked) setShellEnabled(false); }); document.getElementById('theme-preset-select').addEventListener('change', handleThemePresetChange); document.getElementById('theme-bg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-fg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-cursor').addEventListener('input', handleCustomThemeChange); document.querySelector('.close').addEventListener('click', closeModal); window.addEventListener('click', (event) => { if (event.target == document.getElementById('modal')) closeModal(); }); document.getElementById('import-log-btn').addEventListener('click', () => {
+        document.getElementById('import-log-input').click();
+    }); document.getElementById('import-log-input').addEventListener('change', function(e) { if (this.files.length > 0) { handleImportLog(this.files[0]); this.value = ''; } }); }
+
+function setupTitlebar() {
+    document.getElementById('btn-minimize').addEventListener('click', () => {
+        if (typeof minimizeWindow !== 'undefined') minimizeWindow();
+    });
+    const btnMax = document.getElementById('btn-maximize');
+    btnMax.addEventListener('click', () => {
+        if (typeof toggleMaximizeWindow !== 'undefined') toggleMaximizeWindow();
+        btnMax.textContent = btnMax.textContent === '□' ? '❐' : '□';
+    });
+    document.getElementById('btn-close').addEventListener('click', () => {
+        if (typeof closeWindow !== 'undefined') closeWindow();
+    });
+    const port = window.location.port || '8080';
+    document.getElementById('titlebar-title').textContent = 'SerialZero :' + port;
+
+    const titlebar = document.querySelector('.titlebar');
+    titlebar.addEventListener('dblclick', () => {
+        if (typeof toggleMaximizeWindow !== 'undefined') toggleMaximizeWindow();
+        btnMax.textContent = btnMax.textContent === '□' ? '❐' : '□';
+    });
+
+    let dragActive = false;
+    let dragStartX = 0, dragStartY = 0;
+
+    titlebar.addEventListener('mousedown', (e) => {
+        if (e.target.closest('.titlebar-btn')) return;
+        dragActive = true;
+        dragStartX = e.screenX;
+        dragStartY = e.screenY;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!dragActive) return;
+        const dx = e.screenX - dragStartX;
+        const dy = e.screenY - dragStartY;
+        if (dx === 0 && dy === 0) return;
+        if (typeof moveWindow !== 'undefined') moveWindow(dx, dy);
+        dragStartX = e.screenX;
+        dragStartY = e.screenY;
+    });
+
+    document.addEventListener('mouseup', () => {
+        dragActive = false;
+    });
+}
+
+function setupResizeHandles() {
+    let resizeDir = null;
+    let startX = 0, startY = 0;
+
+    document.querySelectorAll('.resize-handle').forEach(handle => {
+        handle.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            resizeDir = handle.className.replace('resize-handle ', '').replace('resize-', '');
+            if (resizeDir === 'n') resizeDir = 'n';
+            else if (resizeDir === 's') resizeDir = 's';
+            else if (resizeDir === 'w') resizeDir = 'w';
+            else if (resizeDir === 'e') resizeDir = 'e';
+            startX = e.screenX;
+            startY = e.screenY;
+        });
+    });
+
+    document.addEventListener('mousemove', (e) => {
+        if (!resizeDir) return;
+        const dx = e.screenX - startX;
+        const dy = e.screenY - startY;
+        if (dx === 0 && dy === 0) return;
+        if (typeof resizeWindow !== 'undefined') {
+            resizeWindow(resizeDir, dx, dy);
+        }
+        startX = e.screenX;
+        startY = e.screenY;
+    });
+
+    document.addEventListener('mouseup', () => {
+        resizeDir = null;
+    });
+}
+function handleImportLog(file) {
+    if (!file) return;
+    console.log('[Log] handleImportLog:', file.name, 'size:', file.size);
+    const tabId = createLogTab(file.name);
+    const view = new LogFileView(tabId);
+    logTabs[tabId] = { view: view, name: file.name };
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+        const text = e.target.result;
+        console.log('[Log] File read, length:', text.length);
+        try {
+            const resp = await fetch('/uploadlog', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tabId: tabId, name: file.name, content: text })
+            });
+            const data = await resp.json();
+            console.log('[Log] /uploadlog response:', data);
+            if (data.status === 'ok') {
+                view.totalLines = data.totalLines;
+                view._initOutput();
+            } else {
+                console.error('[Log] uploadlog failed:', data.message);
+            }
+        } catch (err) {
+            console.error('[Log] uploadlog error:', err);
+        }
+    };
+    reader.onerror = (e) => { console.error('[Log] FileReader error:', e); };
+    reader.readAsText(file);
+}
 function addToOutput(text) { outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); if (isFilterEnabled && filterRegex && filterRegex.test(text)) { appendToSpecificFilterOutput(text, outputMessages.length - 1 + outputTrimOffset, filterOutput, 'main', filterRegex); } }
 function scheduleOutputUpdate() { if (!updateTimer) updateTimer = setTimeout(flushOutput, 16); }
 function flushOutput() { updateTimer = null; if (pendingMessages.length === 0) return; const output = document.getElementById('output'); const fragment = document.createDocumentFragment(); const batch = pendingMessages.splice(0, FLUSH_BATCH_SIZE); updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset); batch.forEach(msg => { const rowDiv = document.createElement('div'); rowDiv.className = 'log-row'; const numSpan = document.createElement('div'); numSpan.className = 'log-row-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = (outputMessages.length + outputTrimOffset); const textSpan = document.createElement('div'); textSpan.className = 'log-row-text'; textSpan.innerHTML = processLogLine(msg); rowDiv.appendChild(numSpan); rowDiv.appendChild(textSpan); fragment.appendChild(rowDiv); }); output.appendChild(fragment); while (output.children.length > MAX_OUTPUT_LINES) { output.removeChild(output.firstChild); outputMessages.shift(); outputTrimOffset++; } output.scrollTop = output.scrollHeight; if (pendingMessages.length > 0) scheduleOutputUpdate(); }
@@ -617,5 +726,194 @@ function doExportLog(content) {
             if (data.status === 'ok') { msgEl.innerHTML = `<span style="color:var(--success-color);">Saved to: ${escapeHtml(data.path)}</span>`; setTimeout(closeModal, 1500); }
             else { msgEl.innerHTML = `<span style="color:var(--danger-color);">Error: ${escapeHtml(data.message)}</span>`; }
         }).catch(err => { msgEl.innerHTML = `<span style="color:var(--danger-color);">Error: ${escapeHtml(err.message)}</span>`; });
+}
+
+// ================= LOG FILE VIEW (SERVER-SIDE CHUNKED LOADING) =================
+
+async function openLogFile(path) {
+    const fileName = path.replace(/^.*[\\/]/, '');
+    const tabId = createLogTab(fileName);
+    const view = new LogFileView(tabId);
+    logTabs[tabId] = { view: view, name: fileName };
+    await view._openPath(path);
+}
+
+class LogFileView {
+    constructor(tabId) {
+        this.tabId = tabId;
+        this.totalLines = 0;
+        this.chunkSize = 2000;
+        this.loadedChunks = new Set();
+        this.nextChunk = 0;
+        this.outputEl = null;
+        this.scrollTimer = null;
+        this.filterMatches = null;
+    }
+
+    /**
+     * @brief Initializes the output DOM element after totalLines is known.
+     */
+    _initOutput() {
+        this.outputEl = document.getElementById(`${this.tabId}_output`);
+        console.log('[Log] _initOutput tabId:', this.tabId, 'outputEl:', this.outputEl, 'totalLines:', this.totalLines);
+        if (!this.outputEl) { console.error('[Log] outputEl not found!'); return; }
+        this.outputEl.innerHTML = '';
+        this.outputEl.style.overflowY = 'auto';
+        this.outputEl.addEventListener('scroll', () => this._onScroll());
+        _lastGlobalLineNumWidth = 0;
+        updateGlobalLineNumWidth(this.totalLines);
+        this.nextChunk = 0;
+        this.loadedChunks.clear();
+        console.log('[Log] calling _loadChunk(0)');
+        this._loadChunk(0);
+    }
+
+    /**
+     * @brief Opens a file by path on the server (kept for future native dialog).
+     */
+    async _openPath(path) {
+        const resp = await fetch('/openlog', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tabId: this.tabId, path: path })
+        });
+        const data = await resp.json();
+        if (data.status !== 'ok') { alert('Failed to open log: ' + data.message); return; }
+        this.totalLines = data.totalLines;
+        this._initOutput();
+    }
+
+    /**
+     * @brief Called on scroll. Loads next chunk when near the bottom.
+     */
+    _onScroll() {
+        if (this.scrollTimer) return;
+        this.scrollTimer = setTimeout(() => {
+            this.scrollTimer = null;
+            if (!this.outputEl) return;
+            const distToBottom = this.outputEl.scrollHeight - this.outputEl.scrollTop - this.outputEl.clientHeight;
+            if (distToBottom < 500 && this.nextChunk * this.chunkSize < this.totalLines) {
+                this._loadChunk(this.nextChunk);
+            }
+        }, 50);
+    }
+
+    /**
+     * @brief Loads a single chunk from the server and appends to DOM.
+     */
+    async _loadChunk(chunkIdx) {
+        const start = chunkIdx * this.chunkSize;
+        const end = Math.min(start + this.chunkSize, this.totalLines);
+        console.log('[Log] _loadChunk', chunkIdx, 'range:', start, '-', end);
+        if (start >= end || this.loadedChunks.has(chunkIdx)) return;
+
+        this.loadedChunks.add(chunkIdx);
+        if (chunkIdx === this.nextChunk) this.nextChunk = chunkIdx + 1;
+
+        let lines;
+        try {
+            const resp = await fetch('/readlog', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tabId: this.tabId, start: start, end: end })
+            });
+            const data = await resp.json();
+            console.log('[Log] /readlog response:', data.status, 'lines:', data.lines ? data.lines.length : 0);
+            if (data.status !== 'ok') { this.loadedChunks.delete(chunkIdx); return; }
+            lines = data.lines.map(l => l.text);
+        } catch (e) {
+            console.error('[Log] /readlog error:', e);
+            this.loadedChunks.delete(chunkIdx);
+            return;
+        }
+
+        if (!this.outputEl) return;
+        const chunkEl = document.createElement('div');
+        chunkEl.className = 'log-chunk';
+        chunkEl.dataset.chunk = chunkIdx;
+
+        const numWidth = getComputedStyle(document.documentElement).getPropertyValue('--line-num-width').trim();
+        let parts = [];
+        for (let i = 0; i < lines.length; i++) {
+            const lineNum = start + i + 1;
+            const body = processLogLine(lines[i]);
+            parts.push(`<div class="log-row"><div class="log-row-num" style="width:${numWidth}">${lineNum}</div><div class="log-row-text">${body}</div></div>`);
+        }
+        chunkEl.innerHTML = parts.join('');
+        console.log('[Log] chunk rendered, lines:', lines.length);
+
+        this.outputEl.appendChild(chunkEl);
+    }
+
+    /**
+     * @brief Searches the file on the server and renders filter results.
+     */
+    async search(regex) {
+        if (!regex) return;
+        const pattern = regex.source;
+        try {
+            const resp = await fetch('/searchlog', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ tabId: this.tabId, pattern: pattern })
+            });
+            const data = await resp.json();
+            if (data.status !== 'ok') return;
+
+            this.filterMatches = data.matches || [];
+            const filterOutput = document.getElementById(`${this.tabId}_filter_output`);
+            if (!filterOutput) return;
+
+            updateGlobalLineNumWidth(this.totalLines);
+            const numWidth = getComputedStyle(document.documentElement).getPropertyValue('--line-num-width').trim();
+            let parts = [];
+            for (const m of this.filterMatches) {
+                const lineNum = m.n + 1;
+                const body = processFilterLine(m.text, regex);
+                parts.push(`<div class="filter-row" data-line-index="${m.n}"><span class="filter-line-num" style="width:${numWidth}">${lineNum}</span><span class="filter-text">${body}</span></div>`);
+            }
+            filterOutput.innerHTML = parts.join('');
+            filterOutput.scrollTop = filterOutput.scrollHeight;
+        } catch (e) {}
+    }
+
+    /**
+     * @brief Jumps to a specific line number.
+     */
+    async jumpToLine(lineNum) {
+        if (!this.outputEl || this.totalLines === 0) return;
+        const chunkIdx = Math.floor(lineNum / this.chunkSize);
+        if (!this.loadedChunks.has(chunkIdx)) {
+            await this._loadChunk(chunkIdx);
+        }
+        const chunkEl = this.outputEl.querySelector(`.log-chunk[data-chunk="${chunkIdx}"]`);
+        if (!chunkEl) return;
+        const rowEl = chunkEl.querySelector(`.log-row`);
+        if (rowEl) {
+            const lineInChunk = lineNum - chunkIdx * this.chunkSize;
+            const rows = chunkEl.querySelectorAll('.log-row');
+            const target = rows[Math.min(lineInChunk, rows.length - 1)];
+            if (target) {
+                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                target.classList.add('flash-highlight');
+                setTimeout(() => target.classList.remove('flash-highlight'), 1000);
+            }
+        }
+    }
+
+    /**
+     * @brief Cleans up resources.
+     */
+    destroy() {
+        if (this.scrollTimer) clearTimeout(this.scrollTimer);
+        if (this.outputEl) {
+            this.outputEl.removeEventListener('scroll', this._onScroll);
+        }
+        fetch('/closelog', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tabId: this.tabId })
+        }).catch(() => {});
+    }
 }
 

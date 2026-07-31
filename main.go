@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"embed"
@@ -120,6 +121,7 @@ type App struct {
 	instancePort  int
 	instanceTitle string
 	configFile    string
+	logManager    *LogFileManager
 }
 
 /**
@@ -165,16 +167,71 @@ var (
 	procMoveWindow = moduser32.NewProc("MoveWindow")
 	procGetSystemMetrics = moduser32.NewProc("GetSystemMetrics")
 	procEnumChildWindows = moduser32.NewProc("EnumChildWindows")
+	procSetWindowLongPtrW = moduser32.NewProc("SetWindowLongPtrW")
+	procGetWindowLongPtrW = moduser32.NewProc("GetWindowLongPtrW")
+	procSetWindowPos = moduser32.NewProc("SetWindowPos")
+	procCallWindowProcW = moduser32.NewProc("CallWindowProcW")
+	procGetClientRect = moduser32.NewProc("GetClientRect")
+	procGetWindowRect = moduser32.NewProc("GetWindowRect")
+	procPostMessageW = moduser32.NewProc("PostMessageW")
+	procDefWindowProcW = moduser32.NewProc("DefWindowProcW")
+	procIsZoomed = moduser32.NewProc("IsZoomed")
 )
 
 const (
 	SW_HIDE = 0
 	SW_SHOW = 5
+	SW_MINIMIZE = 6
+	SW_MAXIMIZE = 3
+	SW_RESTORE = 9
 	SM_CXSCREEN = 0
 	SM_CYSCREEN = 1
+
+	WS_POPUP = 0x80000000
+	WS_CAPTION = 0x00C00000
+	WS_SYSMENU = 0x00080000
+	WS_THICKFRAME = 0x00040000
+	WS_MINIMIZEBOX = 0x00020000
+	WS_MAXIMIZEBOX = 0x00010000
+	WS_VISIBLE = 0x10000000
+	WS_OVERLAPPEDWINDOW = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+	WS_OVERLAPPED = 0x00000000
+
+	SWP_FRAMECHANGED = 0x0020
+	SWP_NOZORDER = 0x0004
+	SWP_NOMOVE = 0x0002
+	SWP_NOSIZE = 0x0001
+
+	WM_NCCALCSIZE = 0x0083
+	WM_NCHITTEST = 0x0084
+	WM_NCLBUTTONDOWN = 0x00A1
+	WM_SYSCOMMAND = 0x0112
+	WM_CLOSE = 0x0010
+	SC_MINIMIZE = 0xF020
+	SC_MAXIMIZE = 0xF030
+	SC_RESTORE = 0xF120
+
+	WVR_VALIDRECTS = 0x400
+
+	HTLEFT = 10
+	HTRIGHT = 11
+	HTTOP = 12
+	HTTOPLEFT = 13
+	HTTOPRIGHT = 14
+	HTBOTTOM = 15
+	HTBOTTOMLEFT = 16
+	HTBOTTOMRIGHT = 17
+	HTCAPTION = 2
+	HTCLIENT = 1
 )
 
+type RECT struct {
+	Left, Top, Right, Bottom int32
+}
+
 var appHwnd uintptr = 0
+var originalWndProc uintptr = 0
+var wndProcCallback uintptr = 0
 
 // Callbacks for hiding/showing child windows recursively
 func hideChildWindowProc(hwnd syscall.Handle, lparam uintptr) uintptr {
@@ -235,6 +292,38 @@ func redirectStdoutToNull() {
 	}
 }
 
+/**
+ * @brief Window procedure for subclassing. Only handles WM_NCCALCSIZE
+ *        to extend the client area into the title bar. All other messages
+ *        (including WM_NCHITTEST) are forwarded to the original proc so
+ *        WebView2 can handle dragging via -webkit-app-region.
+ */
+func windowProc(hwnd syscall.Handle, msg uint32, wparam uintptr, lparam uintptr) uintptr {
+	if msg == WM_NCCALCSIZE && wparam != 0 {
+		return 0
+	}
+	ret, _, _ := procCallWindowProcW.Call(originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
+	return ret
+}
+
+/**
+ * @brief Removes the native window frame (title bar, borders) and
+ *        subclasses the window procedure to handle WM_NCCALCSIZE.
+ */
+func makeFrameless(hwnd uintptr) {
+	gwlStyle := ^uintptr(15) // GWL_STYLE = -16
+	style, _, _ := procGetWindowLongPtrW.Call(hwnd, gwlStyle)
+	newStyle := (style & ^uintptr(WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX|WS_MAXIMIZEBOX)) | uintptr(WS_THICKFRAME)
+	procSetWindowLongPtrW.Call(hwnd, gwlStyle, newStyle)
+	procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, uintptr(SWP_FRAMECHANGED|SWP_NOZORDER|SWP_NOMOVE|SWP_NOSIZE))
+
+	/** Subclass the window procedure */
+	gwlWndProc := ^uintptr(3) // GWL_WNDPROC = -4
+	originalWndProc, _, _ = procGetWindowLongPtrW.Call(hwnd, gwlWndProc)
+	wndProcCallback = syscall.NewCallback(windowProc)
+	procSetWindowLongPtrW.Call(hwnd, gwlWndProc, wndProcCallback)
+}
+
 func findAvailablePort(startPort int) (int, error) {
 	for port := startPort; port < startPort+100; port++ {
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -249,6 +338,17 @@ func findAvailablePort(startPort int) (int, error) {
 func main() {
 	hideConsole()
 	redirectStdoutToNull()
+
+	exePath, _ := os.Executable()
+	logDir := filepath.Dir(exePath)
+	logFile, err := os.OpenFile(filepath.Join(logDir, "serialzero.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err == nil {
+		log.SetOutput(io.MultiWriter(logFile, os.Stderr))
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
+	} else {
+		log.SetOutput(os.Stderr)
+	}
+	log.Println("SerialZero starting...")
 
 	instancePort, err := findAvailablePort(8080)
 	if err != nil {
@@ -277,6 +377,7 @@ func main() {
 		instancePort:   instancePort,
 		instanceTitle:  instanceTitle,
 		configFile:     runtimeConfigFile,
+		logManager:     NewLogFileManager(),
 	}
 	defer os.Remove(runtimeConfigFile)
 
@@ -311,6 +412,53 @@ func main() {
 	appHwnd = uintptr(w.Window())
 	procShowWindow.Call(appHwnd, SW_HIDE)
 	procEnumChildWindows.Call(appHwnd, hideChildCallback, 0)
+
+	makeFrameless(appHwnd)
+
+	w.Bind("minimizeWindow", func() {
+		procShowWindow.Call(appHwnd, uintptr(SW_MINIMIZE))
+	})
+	w.Bind("maximizeWindow", func() {
+		procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+	})
+	w.Bind("toggleMaximizeWindow", func() {
+		ret, _, _ := procIsZoomed.Call(appHwnd)
+		if ret != 0 {
+			procShowWindow.Call(appHwnd, uintptr(SW_RESTORE))
+		} else {
+			procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+		}
+	})
+	w.Bind("closeWindow", func() {
+		procPostMessageW.Call(appHwnd, uintptr(WM_CLOSE), 0, 0)
+	})
+	w.Bind("moveWindow", func(deltaX int, deltaY int) {
+		var rect RECT
+		procGetWindowRect.Call(appHwnd, uintptr(unsafe.Pointer(&rect)))
+		procMoveWindow.Call(appHwnd, uintptr(rect.Left+int32(deltaX)), uintptr(rect.Top+int32(deltaY)), uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top), 1)
+	})
+	w.Bind("resizeWindow", func(direction string, deltaX int, deltaY int) {
+		var rect RECT
+		procGetWindowRect.Call(appHwnd, uintptr(unsafe.Pointer(&rect)))
+		switch direction {
+		case "n":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left), uintptr(rect.Top+int32(deltaY)), uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top-int32(deltaY)), 1)
+		case "s":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left), uintptr(rect.Top), uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top+int32(deltaY)), 1)
+		case "w":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left+int32(deltaX)), uintptr(rect.Top), uintptr(rect.Right-rect.Left-int32(deltaX)), uintptr(rect.Bottom-rect.Top), 1)
+		case "e":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left), uintptr(rect.Top), uintptr(rect.Right-rect.Left+int32(deltaX)), uintptr(rect.Bottom-rect.Top), 1)
+		case "nw":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left+int32(deltaX)), uintptr(rect.Top+int32(deltaY)), uintptr(rect.Right-rect.Left-int32(deltaX)), uintptr(rect.Bottom-rect.Top-int32(deltaY)), 1)
+		case "ne":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left), uintptr(rect.Top+int32(deltaY)), uintptr(rect.Right-rect.Left+int32(deltaX)), uintptr(rect.Bottom-rect.Top-int32(deltaY)), 1)
+		case "sw":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left+int32(deltaX)), uintptr(rect.Top), uintptr(rect.Right-rect.Left-int32(deltaX)), uintptr(rect.Bottom-rect.Top+int32(deltaY)), 1)
+		case "se":
+			procMoveWindow.Call(appHwnd, uintptr(rect.Left), uintptr(rect.Top), uintptr(rect.Right-rect.Left+int32(deltaX)), uintptr(rect.Bottom-rect.Top+int32(deltaY)), 1)
+		}
+	})
 
 	// 2. Configure window
 	w.SetTitle(instanceTitle)
@@ -388,6 +536,12 @@ func (a *App) runWebServer() {
 	r.POST("/runscript", a.handleRunScript)
 	r.POST("/stopscript", a.handleStopScript)
 	r.POST("/exportlog", a.handleExportLog)
+	r.POST("/uploadlog", a.handleUploadLog)
+	r.POST("/browsefile", a.handleBrowseFile)
+	r.POST("/openlog", a.handleOpenLog)
+	r.POST("/readlog", a.handleReadLog)
+	r.POST("/searchlog", a.handleSearchLog)
+	r.POST("/closelog", a.handleCloseLog)
 
 	a.httpServer = &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", a.instancePort), Handler: r}
 	go func() {
@@ -1049,5 +1203,395 @@ func GetDefaultTheme() Theme {
 		BrightCyan: "#29b8db",
 		BrightWhite: "#ffffff",
 	}
+}
+
+// ================= LOG FILE MANAGER =================
+
+/**
+ * @brief OPENFILENAMEW structure for the native Windows file open dialog.
+ */
+type OPENFILENAMEW struct {
+	LStructSize    uint32
+	HwndOwner      syscall.Handle
+	HInstance      syscall.Handle
+	LpstrFilter    *uint16
+	LpstrCustomFilter *uint16
+	NMaxCustFilter uint32
+	NFilterIndex   uint32
+	LpstrFile      *uint16
+	NMaxFile       uint32
+	LpstrFileTitle *uint16
+	NMaxFileTitle  uint32
+	LpstrInitialDir *uint16
+	LpstrTitle     *uint16
+	Flags          uint32
+	NFileOffset    uint16
+	NFileExtension uint16
+	LpstrDefExt    *uint16
+	LCustData      uintptr
+	LpfnHook       uintptr
+	LpTemplateName *uint16
+	PvReserved     unsafe.Pointer
+	DwReserved     uint32
+	FlagsEx        uint32
+}
+
+const (
+	OFN_FILEMUSTEXIST = 0x1000
+	OFN_HIDEREADONLY = 0x4
+	OFN_PATHMUSTEXIST = 0x800
+)
+
+/**
+ * @brief LogFile holds an open file handle and its line byte-offset index.
+ */
+type LogFile struct {
+	path       string
+	file       *os.File
+	lineIndex  []int64
+	totalLines int
+}
+
+/**
+ * @brief LogFileManager manages multiple open log files, keyed by tab ID.
+ */
+type LogFileManager struct {
+	mu    sync.RWMutex
+	files map[string]*LogFile
+}
+
+/**
+ * @brief Creates a new LogFileManager instance.
+ */
+func NewLogFileManager() *LogFileManager {
+	return &LogFileManager{
+		files: make(map[string]*LogFile),
+	}
+}
+
+/**
+ * @brief Opens a file and builds its line index.
+ */
+func (m *LogFileManager) Open(tabID, path string) (*LogFile, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if existing, ok := m.files[tabID]; ok {
+		existing.file.Close()
+		delete(m.files, tabID)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	lf := &LogFile{path: path, file: file}
+	lf.lineIndex = buildLineIndex(file)
+	lf.totalLines = len(lf.lineIndex)
+	m.files[tabID] = lf
+	return lf, nil
+}
+
+/**
+ * @brief Reads a range of lines from the open file.
+ */
+func (m *LogFileManager) ReadLines(tabID string, start, end int) ([]string, error) {
+	m.mu.RLock()
+	lf, ok := m.files[tabID]
+	m.mu.RUnlock()
+	if !ok {
+		log.Printf("ReadLines: tab %s not found", tabID)
+		return nil, fmt.Errorf("log file not open for tab %s", tabID)
+	}
+	log.Printf("ReadLines: tab=%s range=[%d,%d) totalLines=%d", tabID, start, end, lf.totalLines)
+	if start < 0 || end > lf.totalLines || start >= end {
+		log.Printf("ReadLines: invalid range [%d, %d) totalLines=%d", start, end, lf.totalLines)
+		return nil, fmt.Errorf("invalid range [%d, %d)", start, end)
+	}
+	return readLines(lf.file, lf.lineIndex, start, end)
+}
+
+/**
+ * @brief Searches the entire file for lines matching a regex pattern.
+ */
+func (m *LogFileManager) Search(tabID, pattern string) ([]map[string]interface{}, error) {
+	m.mu.RLock()
+	lf, ok := m.files[tabID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, fmt.Errorf("log file not open for tab %s", tabID)
+	}
+	return searchLog(lf.file, pattern)
+}
+
+/**
+ * @brief Closes a log file and frees its index.
+ */
+func (m *LogFileManager) Close(tabID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lf, ok := m.files[tabID]; ok {
+		lf.file.Close()
+		delete(m.files, tabID)
+	}
+}
+
+/**
+ * @brief Scans a file and builds a byte-offset index for each line start.
+ */
+func buildLineIndex(file *os.File) []int64 {
+	file.Seek(0, 0)
+	buf := make([]byte, 64*1024)
+	index := []int64{0}
+	var offset int64
+	for {
+		n, err := file.Read(buf)
+		for i := 0; i < n; i++ {
+			if buf[i] == '\n' {
+				index = append(index, offset+int64(i)+1)
+			}
+		}
+		offset += int64(n)
+		if n == 0 || err != nil {
+			break
+		}
+	}
+	file.Seek(0, 0)
+	return index
+}
+
+/**
+ * @brief Reads lines [start, end) from the file using the line index.
+ */
+func readLines(file *os.File, index []int64, start, end int) ([]string, error) {
+	startOffset := index[start]
+	var endOffset int64
+	if end < len(index) {
+		endOffset = index[end]
+	} else {
+		info, _ := file.Stat()
+		endOffset = info.Size()
+	}
+	log.Printf("readLines: offsets [%d, %d) len=%d", startOffset, endOffset, endOffset-startOffset)
+	file.Seek(startOffset, 0)
+	buf := make([]byte, endOffset-startOffset)
+	n, err := file.Read(buf)
+	log.Printf("readLines: read %d bytes, err=%v", n, err)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	text := string(buf[:n])
+	lines := strings.Split(text, "\n")
+	if len(lines) > (end - start) {
+		lines = lines[:end-start]
+	}
+	log.Printf("readLines: returning %d lines", len(lines))
+	return lines, nil
+}
+
+/**
+ * @brief Searches the entire file for lines matching a regex pattern.
+ */
+func searchLog(file *os.File, pattern string) ([]map[string]interface{}, error) {
+	if pattern == "" {
+		return nil, nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, err
+	}
+	file.Seek(0, 0)
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	var results []map[string]interface{}
+	lineNum := 0
+	for scanner.Scan() {
+		line := scanner.Text()
+		if re.MatchString(line) {
+			results = append(results, map[string]interface{}{
+				"n":    lineNum,
+				"text": line,
+			})
+			if len(results) >= 100000 {
+				break
+			}
+		}
+		lineNum++
+	}
+	file.Seek(0, 0)
+	return results, scanner.Err()
+}
+
+// ================= LOG FILE HTTP HANDLERS =================
+
+/**
+ * @brief Receives file content from the frontend, writes to a temp file,
+ *        and builds the line index.
+ */
+func (a *App) handleUploadLog(c *gin.Context) {
+	var req struct {
+		TabID   string `json:"tabId"`
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	tmpPath := filepath.Join(os.TempDir(), fmt.Sprintf("serialzero_%s_%s", req.TabID, req.Name))
+	log.Printf("Uploading log: tabId=%s, name=%s, size=%d, tmp=%s", req.TabID, req.Name, len(req.Content), tmpPath)
+	if err := os.WriteFile(tmpPath, []byte(req.Content), 0644); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	lf, err := a.logManager.Open(req.TabID, tmpPath)
+	if err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"status":     "ok",
+		"totalLines": lf.totalLines,
+	})
+}
+
+/**
+ * @brief Opens a native Windows file dialog and returns the selected path.
+ */
+func (a *App) handleBrowseFile(c *gin.Context) {
+	var modComdlg32 = syscall.NewLazyDLL("comdlg32.dll")
+	var procGetOpenFileNameW = modComdlg32.NewProc("GetOpenFileNameW")
+
+	filterStr := syscall.StringToUTF16("Log Files (*.log;*.txt)\x00*.log;*.txt\x00All Files (*.*)\x00*.*\x00\x00")
+	fileBuf := make([]uint16, 32767)
+
+	ofn := OPENFILENAMEW{
+		LStructSize: uint32(unsafe.Sizeof(OPENFILENAMEW{})),
+		HwndOwner:   syscall.Handle(appHwnd),
+		LpstrFilter: &filterStr[0],
+		LpstrFile:   &fileBuf[0],
+		NMaxFile:    uint32(len(fileBuf)),
+		Flags:       OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST,
+	}
+
+	ret, _, _ := procGetOpenFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	if ret == 0 {
+		c.JSON(200, gin.H{"status": "ok", "path": ""})
+		return
+	}
+
+	path := syscall.UTF16ToString(fileBuf)
+	c.JSON(200, gin.H{"status": "ok", "path": path})
+}
+
+/**
+ * @brief Opens a log file and builds its line index.
+ */
+func (a *App) handleOpenLog(c *gin.Context) {
+	var req struct {
+		TabID string `json:"tabId"`
+		Path  string `json:"path"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	lf, err := a.logManager.Open(req.TabID, req.Path)
+	if err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{
+		"status":     "ok",
+		"totalLines": lf.totalLines,
+		"fileSize":   getFileSize(req.Path),
+	})
+}
+
+/**
+ * @brief Reads a range of lines from an open log file.
+ */
+func (a *App) handleReadLog(c *gin.Context) {
+	var req struct {
+		TabID string `json:"tabId"`
+		Start int    `json:"start"`
+		End   int    `json:"end"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	lines, err := a.logManager.ReadLines(req.TabID, req.Start, req.End)
+	log.Printf("ReadLog: tabId=%s, range=[%d,%d), lines=%d, err=%v", req.TabID, req.Start, req.End, len(lines), err)
+	if err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	result := make([]map[string]interface{}, len(lines))
+	for i, line := range lines {
+		result[i] = map[string]interface{}{
+			"n":    req.Start + i,
+			"text": line,
+		}
+	}
+
+	c.JSON(200, gin.H{"status": "ok", "lines": result})
+}
+
+/**
+ * @brief Searches an open log file for lines matching a regex.
+ */
+func (a *App) handleSearchLog(c *gin.Context) {
+	var req struct {
+		TabID   string `json:"tabId"`
+		Pattern string `json:"pattern"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	matches, err := a.logManager.Search(req.TabID, req.Pattern)
+	if err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	c.JSON(200, gin.H{"status": "ok", "matches": matches})
+}
+
+/**
+ * @brief Closes an open log file and frees its resources.
+ */
+func (a *App) handleCloseLog(c *gin.Context) {
+	var req struct {
+		TabID string `json:"tabId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": err.Error()})
+		return
+	}
+
+	a.logManager.Close(req.TabID)
+	c.JSON(200, gin.H{"status": "ok"})
+}
+
+/**
+ * @brief Returns the file size in bytes.
+ */
+func getFileSize(path string) int64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	return info.Size()
 }
 

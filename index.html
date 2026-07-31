@@ -8,6 +8,22 @@
     <link rel="stylesheet" href="/static/lib/xterm.css">
 </head>
 <body>
+    <div class="resize-handle resize-n"></div>
+    <div class="resize-handle resize-s"></div>
+    <div class="resize-handle resize-w"></div>
+    <div class="resize-handle resize-e"></div>
+    <div class="resize-handle resize-nw"></div>
+    <div class="resize-handle resize-ne"></div>
+    <div class="resize-handle resize-sw"></div>
+    <div class="resize-handle resize-se"></div>
+    <div class="titlebar">
+        <span class="titlebar-title" id="titlebar-title">SerialZero</span>
+        <div class="titlebar-controls">
+            <button class="titlebar-btn" id="btn-minimize" title="Minimize">─</button>
+            <button class="titlebar-btn" id="btn-maximize" title="Maximize">□</button>
+            <button class="titlebar-btn titlebar-btn-close" id="btn-close" title="Close">✕</button>
+        </div>
+    </div>
     <div class="toolbar">
         <button id="toggle-sidebar-btn" class="icon-btn">☰</button>
         <div class="title">SerialZero</div>
