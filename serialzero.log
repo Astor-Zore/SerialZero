@@ -218,3 +218,148 @@
 2026/07/31 17:12:42 main.go:1389: readLines: returning 2000 lines
 2026/07/31 17:12:42 main.go:1532: ReadLog: tabId=log_1785489151743, range=[920000,922000), lines=2000, err=<nil>
 2026/07/31 17:38:59 main.go:351: SerialZero starting...
+2026/07/31 17:44:01 main.go:351: SerialZero starting...
+2026/07/31 19:28:16 main.go:351: SerialZero starting...
+2026/07/31 19:33:55 main.go:355: SerialZero starting...
+2026/07/31 19:34:10 main.go:1647: Recording started: serial_log_2026-07-31T11-34-06.log
+2026/07/31 19:34:57 main.go:1666: Recording stopped: serial_log_2026-07-31T11-34-06.log
+2026/07/31 19:35:34 main.go:1460: Uploading log: tabId=log_1785497734531, name=Serial-COM1_20260731_140443-MCU.log, size=205585, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785497734531_Serial-COM1_20260731_140443-MCU.log
+2026/07/31 19:35:34 main.go:1320: ReadLines: tab=log_1785497734531 range=[0,1930) totalLines=1930
+2026/07/31 19:35:34 main.go:1392: readLines: offsets [0, 205585) len=205585
+2026/07/31 19:35:34 main.go:1396: readLines: read 205585 bytes, err=<nil>
+2026/07/31 19:35:34 main.go:1405: readLines: returning 1930 lines
+2026/07/31 19:35:34 main.go:1549: ReadLog: tabId=log_1785497734531, range=[0,1930), lines=1930, err=<nil>
+2026/07/31 19:36:48 main.go:355: SerialZero starting...
+2026/07/31 19:37:13 main.go:1647: Recording started: serial_log_2026-07-31T11-37-12.log
+2026/07/31 19:37:33 main.go:1460: Uploading log: tabId=log_1785497852997, name=Serial-COM1_20260731_140443-MCU.log, size=205585, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785497852997_Serial-COM1_20260731_140443-MCU.log
+2026/07/31 19:37:33 main.go:1320: ReadLines: tab=log_1785497852997 range=[0,1930) totalLines=1930
+2026/07/31 19:37:33 main.go:1392: readLines: offsets [0, 205585) len=205585
+2026/07/31 19:37:33 main.go:1396: readLines: read 205585 bytes, err=<nil>
+2026/07/31 19:37:33 main.go:1405: readLines: returning 1930 lines
+2026/07/31 19:37:33 main.go:1549: ReadLog: tabId=log_1785497852997, range=[0,1930), lines=1930, err=<nil>
+2026/07/31 19:38:08 main.go:1460: Uploading log: tabId=log_1785497888940, name=serial_log_2026-07-31T11-37-12.log, size=18869, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785497888940_serial_log_2026-07-31T11-37-12.log
+2026/07/31 19:38:08 main.go:1320: ReadLines: tab=log_1785497888940 range=[0,284) totalLines=284
+2026/07/31 19:38:08 main.go:1392: readLines: offsets [0, 18869) len=18869
+2026/07/31 19:38:08 main.go:1396: readLines: read 18869 bytes, err=<nil>
+2026/07/31 19:38:08 main.go:1405: readLines: returning 284 lines
+2026/07/31 19:38:08 main.go:1549: ReadLog: tabId=log_1785497888940, range=[0,284), lines=284, err=<nil>
+2026/07/31 19:40:14 main.go:1460: Uploading log: tabId=log_1785498014930, name=serial_log_2026-07-31T11-34-06.log, size=472, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785498014930_serial_log_2026-07-31T11-34-06.log
+2026/07/31 19:40:14 main.go:1320: ReadLines: tab=log_1785498014930 range=[0,8) totalLines=8
+2026/07/31 19:40:14 main.go:1392: readLines: offsets [0, 472) len=472
+2026/07/31 19:40:14 main.go:1396: readLines: read 472 bytes, err=<nil>
+2026/07/31 19:40:14 main.go:1405: readLines: returning 8 lines
+2026/07/31 19:40:14 main.go:1549: ReadLog: tabId=log_1785498014930, range=[0,8), lines=8, err=<nil>
+2026/07/31 19:41:58 main.go:1460: Uploading log: tabId=log_1785498118252, name=serial_log_2026-07-31T11-37-12.log, size=98707, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785498118252_serial_log_2026-07-31T11-37-12.log
+2026/07/31 19:41:58 main.go:1320: ReadLines: tab=log_1785498118252 range=[0,1373) totalLines=1373
+2026/07/31 19:41:58 main.go:1392: readLines: offsets [0, 98707) len=98707
+2026/07/31 19:41:58 main.go:1396: readLines: read 98707 bytes, err=<nil>
+2026/07/31 19:41:58 main.go:1405: readLines: returning 1373 lines
+2026/07/31 19:41:58 main.go:1549: ReadLog: tabId=log_1785498118252, range=[0,1373), lines=1373, err=<nil>
+2026/07/31 19:47:33 main.go:355: SerialZero starting...
+2026/07/31 19:48:00 main.go:355: SerialZero starting...
+2026/07/31 19:55:08 main.go:355: SerialZero starting...
+2026/07/31 19:55:32 main.go:1712: Recording started: serial_log_2026-07-31T11-55-25.log
+2026/07/31 19:55:37 main.go:1482: Uploading log: tabId=log_1785498937807, name=serial_log_2026-07-31T11-55-25.log, size=0, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785498937807_serial_log_2026-07-31T11-55-25.log
+2026/07/31 19:55:37 main.go:1321: ReadLines: tab=log_1785498937807 range=[0,1) totalLines=1
+2026/07/31 19:55:37 main.go:1414: readLines: offsets [0, 0) len=0
+2026/07/31 19:55:37 main.go:1418: readLines: read 0 bytes, err=<nil>
+2026/07/31 19:55:37 main.go:1427: readLines: returning 1 lines
+2026/07/31 19:55:37 main.go:1571: ReadLog: tabId=log_1785498937807, range=[0,1), lines=1, err=<nil>
+2026/07/31 19:55:57 main.go:1482: Uploading log: tabId=log_1785498957708, name=serial_log_2026-07-31T11-55-25.log, size=0, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785498957708_serial_log_2026-07-31T11-55-25.log
+2026/07/31 19:55:57 main.go:1321: ReadLines: tab=log_1785498957708 range=[0,1) totalLines=1
+2026/07/31 19:55:57 main.go:1414: readLines: offsets [0, 0) len=0
+2026/07/31 19:55:57 main.go:1418: readLines: read 0 bytes, err=<nil>
+2026/07/31 19:55:57 main.go:1427: readLines: returning 1 lines
+2026/07/31 19:55:57 main.go:1571: ReadLog: tabId=log_1785498957708, range=[0,1), lines=1, err=<nil>
+2026/07/31 19:56:07 main.go:1731: Recording stopped: serial_log_2026-07-31T11-55-25.log
+2026/07/31 19:56:12 main.go:1482: Uploading log: tabId=log_1785498972423, name=serial_log_2026-07-31T11-55-25.log, size=110, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785498972423_serial_log_2026-07-31T11-55-25.log
+2026/07/31 19:56:12 main.go:1321: ReadLines: tab=log_1785498972423 range=[0,6) totalLines=6
+2026/07/31 19:56:12 main.go:1414: readLines: offsets [0, 110) len=110
+2026/07/31 19:56:12 main.go:1418: readLines: read 110 bytes, err=<nil>
+2026/07/31 19:56:12 main.go:1427: readLines: returning 6 lines
+2026/07/31 19:56:12 main.go:1571: ReadLog: tabId=log_1785498972423, range=[0,6), lines=6, err=<nil>
+2026/07/31 19:56:24 main.go:1482: Uploading log: tabId=log_1785498984824, name=serial_log_2026-07-31T11-55-25.log, size=110, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785498984824_serial_log_2026-07-31T11-55-25.log
+2026/07/31 19:56:24 main.go:1321: ReadLines: tab=log_1785498984824 range=[0,6) totalLines=6
+2026/07/31 19:56:24 main.go:1414: readLines: offsets [0, 110) len=110
+2026/07/31 19:56:24 main.go:1418: readLines: read 110 bytes, err=<nil>
+2026/07/31 19:56:24 main.go:1427: readLines: returning 6 lines
+2026/07/31 19:56:24 main.go:1571: ReadLog: tabId=log_1785498984824, range=[0,6), lines=6, err=<nil>
+2026/07/31 19:56:46 main.go:1482: Uploading log: tabId=log_1785499006574, name=serial_log_2026-07-31T11-37-12.log, size=215188, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785499006574_serial_log_2026-07-31T11-37-12.log
+2026/07/31 19:56:46 main.go:1321: ReadLines: tab=log_1785499006574 range=[0,2000) totalLines=2933
+2026/07/31 19:56:46 main.go:1414: readLines: offsets [0, 147270) len=147270
+2026/07/31 19:56:46 main.go:1418: readLines: read 147270 bytes, err=<nil>
+2026/07/31 19:56:46 main.go:1427: readLines: returning 2000 lines
+2026/07/31 19:56:46 main.go:1571: ReadLog: tabId=log_1785499006574, range=[0,2000), lines=2000, err=<nil>
+2026/07/31 20:08:23 main.go:355: SerialZero starting...
+2026/07/31 20:08:38 main.go:1742: Recording started: serial_log_2026-07-31T12-08-34.log
+2026/07/31 20:08:46 main.go:1761: Recording stopped: serial_log_2026-07-31T12-08-34.log
+2026/07/31 20:09:42 main.go:355: SerialZero starting...
+2026/07/31 20:14:41 main.go:355: SerialZero starting...
+2026/07/31 20:15:01 main.go:1742: Recording started: serial_log_2026-07-31T12-15-00.log
+2026/07/31 20:15:04 main.go:1483: Uploading log: tabId=log_1785500104396, name=serial_log_2026-07-31T12-15-00.log, size=0, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785500104396_serial_log_2026-07-31T12-15-00.log
+2026/07/31 20:15:04 main.go:1322: ReadLines: tab=log_1785500104396 range=[0,1) totalLines=1
+2026/07/31 20:15:04 main.go:1415: readLines: offsets [0, 0) len=0
+2026/07/31 20:15:04 main.go:1419: readLines: read 0 bytes, err=<nil>
+2026/07/31 20:15:04 main.go:1428: readLines: returning 1 lines
+2026/07/31 20:15:04 main.go:1601: ReadLog: tabId=log_1785500104396, range=[0,1), lines=1, err=<nil>
+2026/07/31 20:16:15 main.go:1761: Recording stopped: serial_log_2026-07-31T12-15-00.log
+2026/07/31 20:16:22 main.go:1483: Uploading log: tabId=log_1785500182470, name=serial_log_2026-07-31T12-15-00.log, size=4203, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785500182470_serial_log_2026-07-31T12-15-00.log
+2026/07/31 20:16:22 main.go:1322: ReadLines: tab=log_1785500182470 range=[0,29) totalLines=29
+2026/07/31 20:16:22 main.go:1415: readLines: offsets [0, 4203) len=4203
+2026/07/31 20:16:22 main.go:1419: readLines: read 4203 bytes, err=<nil>
+2026/07/31 20:16:22 main.go:1428: readLines: returning 29 lines
+2026/07/31 20:16:22 main.go:1601: ReadLog: tabId=log_1785500182470, range=[0,29), lines=29, err=<nil>
+2026/07/31 20:16:35 main.go:1483: Uploading log: tabId=log_1785500195024, name=serial_log_2026-07-31T12-15-00.log, size=4203, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785500195024_serial_log_2026-07-31T12-15-00.log
+2026/07/31 20:16:35 main.go:1322: ReadLines: tab=log_1785500195024 range=[0,29) totalLines=29
+2026/07/31 20:16:35 main.go:1415: readLines: offsets [0, 4203) len=4203
+2026/07/31 20:16:35 main.go:1419: readLines: read 4203 bytes, err=<nil>
+2026/07/31 20:16:35 main.go:1428: readLines: returning 29 lines
+2026/07/31 20:16:35 main.go:1601: ReadLog: tabId=log_1785500195024, range=[0,29), lines=29, err=<nil>
+2026/08/01 14:14:03 main.go:355: SerialZero starting...
+2026/08/01 15:51:43 main.go:355: SerialZero starting...
+2026/08/01 15:52:14 main.go:1483: Uploading log: tabId=log_1785570734584, name=serial_log_2026-08-01T07-51-53_recording.log, size=0, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785570734584_serial_log_2026-08-01T07-51-53_recording.log
+2026/08/01 15:52:14 main.go:1322: ReadLines: tab=log_1785570734584 range=[0,1) totalLines=1
+2026/08/01 15:52:14 main.go:1415: readLines: offsets [0, 0) len=0
+2026/08/01 15:52:14 main.go:1419: readLines: read 0 bytes, err=<nil>
+2026/08/01 15:52:14 main.go:1428: readLines: returning 1 lines
+2026/08/01 15:52:14 main.go:1601: ReadLog: tabId=log_1785570734584, range=[0,1), lines=1, err=<nil>
+2026/08/01 15:53:18 main.go:1483: Uploading log: tabId=log_1785570798594, name=serial_log_2026-08-01T07-51-53_recording.log.crswap, size=26579, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785570798594_serial_log_2026-08-01T07-51-53_recording.log.crswap
+2026/08/01 15:53:18 main.go:1322: ReadLines: tab=log_1785570798594 range=[0,776) totalLines=776
+2026/08/01 15:53:18 main.go:1415: readLines: offsets [0, 26579) len=26579
+2026/08/01 15:53:18 main.go:1419: readLines: read 26579 bytes, err=<nil>
+2026/08/01 15:53:18 main.go:1428: readLines: returning 776 lines
+2026/08/01 15:53:18 main.go:1601: ReadLog: tabId=log_1785570798594, range=[0,776), lines=776, err=<nil>
+2026/08/01 15:56:45 main.go:355: SerialZero starting...
+2026/08/01 15:57:11 main.go:355: SerialZero starting...
+2026/08/01 16:16:16 main.go:355: SerialZero starting...
+2026/08/01 16:53:36 main.go:1742: Recording started: serial_log_2026-08-01T08-53-35.log
+2026/08/01 16:53:45 main.go:1483: Uploading log: tabId=log_1785574425690, name=serial_log_2026-08-01T08-53-35.log, size=4238, tmp=C:\Users\astor.jiang\AppData\Local\Temp\serialzero_log_1785574425690_serial_log_2026-08-01T08-53-35.log
+2026/08/01 16:53:45 main.go:1322: ReadLines: tab=log_1785574425690 range=[0,30) totalLines=30
+2026/08/01 16:53:45 main.go:1415: readLines: offsets [0, 4238) len=4238
+2026/08/01 16:53:45 main.go:1419: readLines: read 4238 bytes, err=<nil>
+2026/08/01 16:53:45 main.go:1428: readLines: returning 30 lines
+2026/08/01 16:53:45 main.go:1601: ReadLog: tabId=log_1785574425690, range=[0,30), lines=30, err=<nil>
+2026/08/01 16:54:58 main.go:1761: Recording stopped: serial_log_2026-08-01T08-53-35.log
+2026/08/03 09:17:26 main.go:355: SerialZero starting...
+2026/08/04 09:23:13 main.go:355: SerialZero starting...
+2026/08/04 10:19:26 main.go:355: SerialZero starting...
+2026/08/04 13:00:56 main.go:355: SerialZero starting...
+2026/08/04 16:12:32 main.go:355: SerialZero starting...
+2026/08/04 16:12:32 main.go:359: Failed to find available port: no available port in range 8080-8179
+2026/08/04 16:13:28 main.go:355: SerialZero starting...
+2026/08/05 09:40:00 main.go:355: SerialZero starting...
+2026/08/05 09:47:17 main.go:355: SerialZero starting...
+2026/08/05 09:49:09 main.go:351: SerialZero starting...
+2026/08/06 09:20:59 main.go:351: SerialZero starting...
+2026/08/07 09:04:12 main.go:351: SerialZero starting...
+2026/08/07 09:06:30 main.go:351: SerialZero starting...
+2026/08/07 11:19:40 main.go:351: SerialZero starting...
+2026/08/08 10:54:32 main.go:351: SerialZero starting...
+2026/08/08 12:27:30 main.go:377: SerialZero starting...
+2026/08/08 13:14:20 main.go:377: SerialZero starting...
+2026/08/08 15:45:38 main.go:377: SerialZero starting...
+2026/08/08 17:10:16 main.go:377: SerialZero starting...
+2026/08/08 17:17:29 main.go:377: SerialZero starting...
+2026/08/08 17:43:40 main.go:377: SerialZero starting...
+2026/08/08 17:44:09 main.go:377: SerialZero starting...
+2026/08/08 19:03:11 main.go:377: SerialZero starting...

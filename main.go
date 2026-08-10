@@ -176,6 +176,7 @@ var (
 	procPostMessageW = moduser32.NewProc("PostMessageW")
 	procDefWindowProcW = moduser32.NewProc("DefWindowProcW")
 	procIsZoomed = moduser32.NewProc("IsZoomed")
+	procSystemParametersInfoW = moduser32.NewProc("SystemParametersInfoW")
 )
 
 const (
@@ -205,11 +206,14 @@ const (
 	WM_NCCALCSIZE = 0x0083
 	WM_NCHITTEST = 0x0084
 	WM_NCLBUTTONDOWN = 0x00A1
+	WM_GETMINMAXINFO = 0x0024
 	WM_SYSCOMMAND = 0x0112
 	WM_CLOSE = 0x0010
 	SC_MINIMIZE = 0xF020
 	SC_MAXIMIZE = 0xF030
 	SC_RESTORE = 0xF120
+
+	SPI_GETWORKAREA = 0x0030
 
 	WVR_VALIDRECTS = 0x400
 
@@ -227,6 +231,18 @@ const (
 
 type RECT struct {
 	Left, Top, Right, Bottom int32
+}
+
+type POINT struct {
+	X, Y int32
+}
+
+type MINMAXINFO struct {
+	ptReserved     POINT
+	ptMaxSize      POINT
+	ptMaxPosition  POINT
+	ptMinTrackSize POINT
+	ptMaxTrackSize POINT
 }
 
 var appHwnd uintptr = 0
@@ -300,6 +316,16 @@ func redirectStdoutToNull() {
  */
 func windowProc(hwnd syscall.Handle, msg uint32, wparam uintptr, lparam uintptr) uintptr {
 	if msg == WM_NCCALCSIZE && wparam != 0 {
+		return 0
+	}
+	if msg == WM_GETMINMAXINFO {
+		var rect RECT
+		procSystemParametersInfoW.Call(uintptr(SPI_GETWORKAREA), 0, uintptr(unsafe.Pointer(&rect)), 0)
+		mmi := (*MINMAXINFO)(unsafe.Pointer(lparam))
+		mmi.ptMaxPosition.X = rect.Left
+		mmi.ptMaxPosition.Y = rect.Top
+		mmi.ptMaxSize.X = rect.Right - rect.Left
+		mmi.ptMaxSize.Y = rect.Bottom - rect.Top
 		return 0
 	}
 	ret, _, _ := procCallWindowProcW.Call(originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
@@ -436,6 +462,11 @@ func main() {
 		var rect RECT
 		procGetWindowRect.Call(appHwnd, uintptr(unsafe.Pointer(&rect)))
 		procMoveWindow.Call(appHwnd, uintptr(rect.Left+int32(deltaX)), uintptr(rect.Top+int32(deltaY)), uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top), 1)
+	})
+	w.Bind("moveWindowTo", func(x int, y int) {
+		var rect RECT
+		procGetWindowRect.Call(appHwnd, uintptr(unsafe.Pointer(&rect)))
+		procMoveWindow.Call(appHwnd, uintptr(x), uintptr(y), uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top), 1)
 	})
 	w.Bind("resizeWindow", func(direction string, deltaX int, deltaY int) {
 		var rect RECT
@@ -1010,6 +1041,11 @@ func (a *App) NewScriptEngine() *ScriptEngine {
 func (se *ScriptEngine) registerAPIs(L *lua.LState) {
 	// send(data)
 	L.SetGlobal("send", L.NewFunction(func(L *lua.LState) int {
+		select {
+		case <-se.ctx.Done():
+			return 0
+		default:
+		}
 		data := L.CheckString(1)
 		if se.app.isConnected {
 			se.app.writeChan <- []byte(data)

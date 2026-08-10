@@ -16,7 +16,7 @@
   scrollback = 1000000
 
 [highlight]
-  groups = ["audio:#bfd200", "volume:#f16000", "new_wear:#00ff00", ">>>:#ff36ab", "<<<:#ff36ab", "timeout:#ff006e", "period:#4cc9f0", "decode failed:#f51924", "VoiceCmd:#55e042"]
+  groups = ["audio:#bfd200", "volume:#f16000", "new_wear:#00ff00", ">>>:#ff36ab", "<<<:#ff36ab", "timeout:#ff006e", "period:#4cc9f0", "decode failed:#f51924", "WakeWord detected:#55e042", "active:#66ed2c", "inactive:#f5666d"]
 
 [theme]
   name = "Dracula"
