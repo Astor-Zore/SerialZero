@@ -56,7 +56,7 @@ body {
 .resize-se { bottom: 0; right: 0; cursor: se-resize; }
 
 .titlebar {
-    height: 32px;
+    height: 32px; /* drag: native WM_NCHITTEST->HTCAPTION in main.go */
     background-color: var(--bg-secondary);
     display: flex;
     align-items: center;
@@ -269,6 +269,7 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     flex-shrink: 0; text-align: right; padding: 0 8px; color: #555; font-size: 12px;
     user-select: none; border-right: 1px solid var(--border-color);
     background-color: rgba(0,0,0,0.1); display: flex; align-items: center; justify-content: flex-end;
+    width: var(--line-num-width, 50px);
 }
 .log-row-text { flex: 1; padding: 0 10px 0 10px; word-break: break-all; }
 .output {
@@ -282,8 +283,6 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
     background-color: var(--bg-primary);
     color: var(--text-primary);
     padding: 0 15px;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 100vh;
 }
 .output span[style*="color"] { font-weight: bold; }
 
@@ -347,7 +346,7 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
 
 .filter-row { display: flex; cursor: pointer; border-left: 2px solid transparent; border-bottom: 1px solid rgba(255,255,255,0.03); }
 .filter-row:hover { background-color: rgba(255, 255, 255, 0.05); }
-.filter-line-num { width: 50px; flex-shrink: 0; text-align: right; padding: 0 8px; color: #555; font-size: 12px; user-select: none; border-right: 1px solid rgba(255,255,255,0.05); margin-right: 10px; display: flex; align-items: center; justify-content: flex-end; background-color: rgba(0,0,0,0.1); }
+.filter-line-num { width: var(--line-num-width, 50px); flex-shrink: 0; text-align: right; padding: 0 8px; color: #555; font-size: 12px; user-select: none; border-right: 1px solid rgba(255,255,255,0.05); margin-right: 10px; display: flex; align-items: center; justify-content: flex-end; background-color: rgba(0,0,0,0.1); }
 .filter-text { flex: 1; padding: 0 10px 0 0; word-break: break-all; }
 .flash-highlight { animation: flash-anim 1s ease-out; }
 @keyframes flash-anim { 0% { background-color: rgba(11, 99, 156, 0.6); } 100% { background-color: transparent; } }

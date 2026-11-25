@@ -114,6 +114,7 @@ type App struct {
 	writeChan     chan []byte
 	receiveChan   chan []byte
 	mu            sync.Mutex
+	ioDone        chan struct{}
 	httpServer    *http.Server
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -122,6 +123,136 @@ type App struct {
 	instanceTitle string
 	configFile    string
 	logManager    *LogFileManager
+	sessionLog    *SessionLog
+}
+
+// ================= SESSION LOG (auto disk logging) =================
+
+/**
+ * @brief SessionLog writes the live serial session to a log file in
+ *        ./logs (e.g. COM4_20260322_14-33-34.log). One file per connection.
+ *        Writes go through a channel so the broadcast hot path never blocks.
+ */
+type SessionLog struct {
+	mu       sync.Mutex
+	file     *os.File
+	path     string
+	writeCh  chan string
+	flushCh  chan chan struct{}
+	done     chan struct{}
+}
+
+// StartSessionLog creates the session log file and starts the writer goroutine.
+func StartSessionLog(port, logDir string, timestamp bool) *SessionLog {
+	os.MkdirAll(logDir, 0755)
+	name := fmt.Sprintf("%s_%s.log", sanitizeLogName(port), time.Now().Format("20060102_15-04-05"))
+	path := filepath.Join(logDir, name)
+	file, err := os.Create(path)
+	if err != nil {
+		log.Printf("SessionLog: failed to create %s: %v", path, err)
+		return nil
+	}
+	sl := &SessionLog{
+		file:    file,
+		path:    path,
+		writeCh: make(chan string, 4096),
+		flushCh: make(chan chan struct{}, 1),
+		done:    make(chan struct{}),
+	}
+	go sl.writeLoop()
+	log.Printf("SessionLog: started %s", path)
+	return sl
+}
+
+// sanitizeLogName makes the port name safe for a filename.
+func sanitizeLogName(port string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			return r
+		}
+		return '_'
+	}, port)
+}
+
+func (sl *SessionLog) writeLoop() {
+	buf := bufio.NewWriter(sl.file)
+	for {
+		select {
+		case s, ok := <-sl.writeCh:
+			if !ok {
+				buf.Flush()
+				sl.file.Close()
+				close(sl.done)
+				return
+			}
+			buf.WriteString(s)
+			if buf.Buffered() >= 32*1024 {
+				buf.Flush()
+			}
+		case ack := <-sl.flushCh:
+			buf.Flush()
+			close(ack)
+		case <-time.After(500 * time.Millisecond):
+			buf.Flush()
+		}
+	}
+}
+
+// Write queues a line for the session log; never blocks.
+func (sl *SessionLog) Write(line string) {
+	if sl == nil {
+		return
+	}
+	select {
+	case sl.writeCh <- line:
+	default: // Drop on overflow rather than block the broadcast path
+	}
+}
+
+// Close flushes and closes the session log (async-safe).
+func (sl *SessionLog) Close() {
+	if sl == nil {
+		return
+	}
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	if sl.file == nil {
+		return
+	}
+	close(sl.writeCh)
+	<-sl.done
+	sl.file = nil
+}
+
+// Path returns the current session log file path ("" if closed).
+func (sl *SessionLog) Path() string {
+	if sl == nil {
+		return ""
+	}
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	if sl.file == nil {
+		return ""
+	}
+	return sl.path
+}
+
+// Flush asks the writer goroutine to flush its buffer and waits for the ack.
+func (sl *SessionLog) Flush() {
+	if sl == nil {
+		return
+	}
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	if sl.file == nil {
+		return
+	}
+	ack := make(chan struct{})
+	select {
+	case sl.flushCh <- ack:
+		<-ack
+	case <-time.After(time.Second):
+	}
 }
 
 /**
@@ -153,6 +284,10 @@ var upgrader = websocket.Upgrader{
 
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
 
+// logStripRegex strips ANSI CSI/OSC sequences and non-printable control
+// characters (except \n, \r, \t) before writing to the session log file.
+var logStripRegex = regexp.MustCompile("\x1b\\[[0-?]*[ -/]*[@-~]|\x1b\\][^\\x07\\x1b]*(\x07|\x1b\\\\)|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
 // Win32 API declarations
 var (
 	modkernel32 = syscall.NewLazyDLL("kernel32.dll")
@@ -164,6 +299,7 @@ var (
 	procLoadIconW = moduser32.NewProc("LoadIconW")
 	procGetModuleHandleW = modkernel32.NewProc("GetModuleHandleW")
 	procShowWindow = moduser32.NewProc("ShowWindow")
+	procIsWindowVisible = moduser32.NewProc("IsWindowVisible")
 	procMoveWindow = moduser32.NewProc("MoveWindow")
 	procGetSystemMetrics = moduser32.NewProc("GetSystemMetrics")
 	procEnumChildWindows = moduser32.NewProc("EnumChildWindows")
@@ -173,10 +309,21 @@ var (
 	procCallWindowProcW = moduser32.NewProc("CallWindowProcW")
 	procGetClientRect = moduser32.NewProc("GetClientRect")
 	procGetWindowRect = moduser32.NewProc("GetWindowRect")
+	procGetWindow = moduser32.NewProc("GetWindow")
+	procScreenToClient = moduser32.NewProc("ScreenToClient")
+	procReleaseCapture = moduser32.NewProc("ReleaseCapture")
+	procGetCursorPos = moduser32.NewProc("GetCursorPos")
 	procPostMessageW = moduser32.NewProc("PostMessageW")
 	procDefWindowProcW = moduser32.NewProc("DefWindowProcW")
 	procIsZoomed = moduser32.NewProc("IsZoomed")
 	procSystemParametersInfoW = moduser32.NewProc("SystemParametersInfoW")
+	procRegisterClassExW              = moduser32.NewProc("RegisterClassExW")
+	procCreateWindowExW               = moduser32.NewProc("CreateWindowExW")
+	procLoadCursorW                   = moduser32.NewProc("LoadCursorW")
+	procPostQuitMessage               = moduser32.NewProc("PostQuitMessage")
+	procSetProcessDpiAwarenessContext = moduser32.NewProc("SetProcessDpiAwarenessContext")
+	modole32                 = syscall.NewLazyDLL("ole32.dll")
+	procCoInitializeEx        = modole32.NewProc("CoInitializeEx")
 )
 
 const (
@@ -203,6 +350,8 @@ const (
 	SWP_NOMOVE = 0x0002
 	SWP_NOSIZE = 0x0001
 
+	WM_DESTROY = 0x0002
+	WM_SIZE = 0x0005
 	WM_NCCALCSIZE = 0x0083
 	WM_NCHITTEST = 0x0084
 	WM_NCLBUTTONDOWN = 0x00A1
@@ -227,11 +376,34 @@ const (
 	HTBOTTOMRIGHT = 17
 	HTCAPTION = 2
 	HTCLIENT = 1
+	HTTRANSPARENT = 0xFFFFFFFF
+	GW_CHILD = 5
+	GW_HWNDNEXT = 2
+	GWLP_WNDPROC = 0xFFFFFFFC
 )
 
 type RECT struct {
 	Left, Top, Right, Bottom int32
 }
+
+// WNDCLASSEXW for registering our own top-level window class.
+type WNDCLASSEXW struct {
+	CbSize         uint32
+	Style          uint32
+	LpfnWndProc    uintptr
+	CbClsExtra     int32
+	CbWndExtra     int32
+	HInstance      uintptr
+	HIcon          uintptr
+	HCursor        uintptr
+	HbrBackground  uintptr
+	LpszMenuName   *uint16
+	LpszClassName  *uint16
+	HIconSm        uintptr
+}
+
+// Keep the class-name buffer alive globally (pointer is stored in the OS).
+var serialClassName, _ = syscall.UTF16PtrFromString("SerialZeroWnd")
 
 type POINT struct {
 	X, Y int32
@@ -246,22 +418,88 @@ type MINMAXINFO struct {
 }
 
 var appHwnd uintptr = 0
-var originalWndProc uintptr = 0
 var wndProcCallback uintptr = 0
 
 // Callbacks for hiding/showing child windows recursively
-func hideChildWindowProc(hwnd syscall.Handle, lparam uintptr) uintptr {
-	procShowWindow.Call(uintptr(hwnd), SW_HIDE)
-	return 1
-}
-
 func showChildWindowProc(hwnd syscall.Handle, lparam uintptr) uintptr {
 	procShowWindow.Call(uintptr(hwnd), SW_SHOW)
 	return 1
 }
 
-var hideChildCallback = syscall.NewCallback(hideChildWindowProc)
 var showChildCallback = syscall.NewCallback(showChildWindowProc)
+
+// Moves the DIRECT child windows to fill the client area of hwnd.
+// EnumChildWindows must NOT be used here: it enumerates ALL descendants
+// recursively, and forcing Chromium's internal window hierarchy into one
+// rectangle corrupts the WebView2 layout (that was the "tiny content after
+// restore" bug). We walk only the first-level children via GW_CHILD.
+func resizeChildWindows(hwnd uintptr) {
+	var rect RECT
+	r1, _, _ := procGetClientRect.Call(hwnd, uintptr(unsafe.Pointer(&rect)))
+	if r1 == 0 {
+		return
+	}
+	child, _, _ := procGetWindow.Call(hwnd, uintptr(GW_CHILD))
+	for child != 0 {
+		procMoveWindow.Call(child, 0, 0, uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top), 1)
+		child, _, _ = procGetWindow.Call(child, uintptr(GW_HWNDNEXT))
+	}
+}
+
+// (Removed: WebView2 window-tree subclassing for HTCAPTION. Hit-test bubbling
+// through the Chromium window tree does not work reliably; dragging is
+// instead initiated explicitly - see the startWindowDrag bind.)
+
+/**
+ * @brief Creates the hidden frameless top-level window that WebView2 embeds into.
+ *        Creating it ourselves (without WS_VISIBLE) means webview_go's internal
+ *        ShowWindow(SW_SHOW) during webview_create is skipped entirely - that
+ *        was the source of the white flash at startup.
+ */
+func createAppWindow(title string, width, height int) uintptr {
+	wndProcCallback = syscall.NewCallback(windowProc)
+	hInstance, _, _ := procGetModuleHandleW.Call(uintptr(0))
+	arrow, _, _ := procLoadCursorW.Call(uintptr(0), uintptr(32512)) // IDC_ARROW
+	wc := WNDCLASSEXW{}
+	wc.CbSize = uint32(unsafe.Sizeof(wc))
+	wc.LpfnWndProc = wndProcCallback
+	wc.HInstance = hInstance
+	wc.HCursor = arrow
+	wc.LpszClassName = serialClassName
+	procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wc)))
+
+	screenW, _, _ := procGetSystemMetrics.Call(uintptr(SM_CXSCREEN))
+	screenH, _, _ := procGetSystemMetrics.Call(uintptr(SM_CYSCREEN))
+	posX := (int(screenW) - width) / 2
+	posY := (int(screenH) - height) / 2
+	if posX < 0 {
+		posX = 0
+	}
+	if posY < 0 {
+		posY = 0
+	}
+
+	// No WS_CAPTION / WS_SYSMENU and no WS_VISIBLE: frameless from birth and
+	// hidden until the frontend signals /ready. WS_THICKFRAME keeps the
+	// resize borders (JS resize handles drive the actual resizing).
+	style := uintptr(WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+	titlePtr, _ := syscall.UTF16PtrFromString(title)
+	hwnd, _, _ := procCreateWindowExW.Call(0,
+		uintptr(unsafe.Pointer(serialClassName)),
+		uintptr(unsafe.Pointer(titlePtr)),
+		style,
+		uintptr(posX), uintptr(posY), uintptr(width), uintptr(height),
+		0, 0, hInstance, 0)
+
+	// Force a frame recalculation NOW: WM_NCCALCSIZE is only sent during a
+	// frame-changing SetWindowPos. Without this the WS_THICKFRAME non-client
+	// border keeps its default metrics and stays visible until some later
+	// interaction triggers a re-layout.
+	procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0,
+		uintptr(SWP_NOMOVE|SWP_NOSIZE|SWP_NOZORDER|SWP_FRAMECHANGED))
+
+	return hwnd
+}
 
 /**
  * @brief Finds the window by title and sets its icon from the embedded resource.
@@ -309,13 +547,22 @@ func redirectStdoutToNull() {
 }
 
 /**
- * @brief Window procedure for subclassing. Only handles WM_NCCALCSIZE
- *        to extend the client area into the title bar. All other messages
- *        (including WM_NCHITTEST) are forwarded to the original proc so
- *        WebView2 can handle dragging via -webkit-app-region.
+ * @brief Window procedure for our frameless window. WM_NCCALCSIZE->0
+ *        extends the client area over the whole window; WM_NCHITTEST maps
+ *        the top 32px to HTCAPTION so the OS handles dragging natively
+ *        (WebView2 does not support -webkit-app-region: drag).
  */
 func windowProc(hwnd syscall.Handle, msg uint32, wparam uintptr, lparam uintptr) uintptr {
 	if msg == WM_NCCALCSIZE && wparam != 0 {
+		return 0
+	}
+	if msg == WM_SIZE {
+		// Keep the WebView2 child widget filling the client area.
+		resizeChildWindows(uintptr(hwnd))
+	}
+	if msg == WM_DESTROY {
+		// Our own window class: end the webview message loop on close.
+		procPostQuitMessage.Call(0)
 		return 0
 	}
 	if msg == WM_GETMINMAXINFO {
@@ -326,28 +573,32 @@ func windowProc(hwnd syscall.Handle, msg uint32, wparam uintptr, lparam uintptr)
 		mmi.ptMaxPosition.Y = rect.Top
 		mmi.ptMaxSize.X = rect.Right - rect.Left
 		mmi.ptMaxSize.Y = rect.Bottom - rect.Top
+		mmi.ptMinTrackSize.X = 200
+		mmi.ptMinTrackSize.Y = 100
 		return 0
 	}
-	ret, _, _ := procCallWindowProcW.Call(originalWndProc, uintptr(hwnd), uintptr(msg), wparam, lparam)
+	if msg == WM_NCHITTEST {
+		// Let the OS compute the default hit code first: with WS_THICKFRAME and
+		// WM_NCCALCSIZE->0 the default proc still returns the resize-edge codes
+		// (HTLEFT/HTRIGHT/...) for the window borders, and HTCLIENT inside.
+		ret, _, _ := procDefWindowProcW.Call(uintptr(hwnd), uintptr(msg), wparam, lparam)
+		if ret == uintptr(HTCLIENT) {
+			// Screen coords are packed in lparam (signed shorts).
+			x := int16(uint16(lparam & 0xFFFF))
+			y := int16(uint16((lparam >> 16) & 0xFFFF))
+			pt := POINT{int32(x), int32(y)}
+			procScreenToClient.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&pt)))
+			if pt.Y < 32 {
+				// Top 32px of the client area acts as the caption bar: the OS
+				// then owns dragging natively (DPI-correct across monitors).
+				// WebView2 does NOT support -webkit-app-region: drag.
+				return uintptr(HTCAPTION)
+			}
+		}
+		return ret
+	}
+	ret, _, _ := procDefWindowProcW.Call(uintptr(hwnd), uintptr(msg), wparam, lparam)
 	return ret
-}
-
-/**
- * @brief Removes the native window frame (title bar, borders) and
- *        subclasses the window procedure to handle WM_NCCALCSIZE.
- */
-func makeFrameless(hwnd uintptr) {
-	gwlStyle := ^uintptr(15) // GWL_STYLE = -16
-	style, _, _ := procGetWindowLongPtrW.Call(hwnd, gwlStyle)
-	newStyle := (style & ^uintptr(WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX|WS_MAXIMIZEBOX)) | uintptr(WS_THICKFRAME)
-	procSetWindowLongPtrW.Call(hwnd, gwlStyle, newStyle)
-	procSetWindowPos.Call(hwnd, 0, 0, 0, 0, 0, uintptr(SWP_FRAMECHANGED|SWP_NOZORDER|SWP_NOMOVE|SWP_NOSIZE))
-
-	/** Subclass the window procedure */
-	gwlWndProc := ^uintptr(3) // GWL_WNDPROC = -4
-	originalWndProc, _, _ = procGetWindowLongPtrW.Call(hwnd, gwlWndProc)
-	wndProcCallback = syscall.NewCallback(windowProc)
-	procSetWindowLongPtrW.Call(hwnd, gwlWndProc, wndProcCallback)
 }
 
 func findAvailablePort(startPort int) (int, error) {
@@ -431,15 +682,22 @@ func main() {
 		}, nil)
 	}()
 	time.Sleep(500 * time.Millisecond)
-	w := webview.New(true)
+
+	// Per-monitor DPI awareness: all coordinates (JS screenX, MoveWindow,
+	// GetWindowRect) become physical pixels - fixes the window offset when
+	// dragging across monitors with different DPI.
+	procSetProcessDpiAwarenessContext.Call(^uintptr(3)) // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+
+	// Initialize COM (STA) on this thread BEFORE creating the webview: with an
+	// external HWND, the webview library skips its own CoInitialize, and
+	// CreateCoreWebView2Environment requires it.
+	procCoInitializeEx.Call(0, uintptr(0x2)) // COINIT_APARTMENTTHREADED
+
+	// Create the hidden frameless window BEFORE webview so it embeds into it
+	// without ever showing it (no white flash).
+	appHwnd = createAppWindow(instanceTitle, 1024, 768)
+	w := webview.NewWindow(true, unsafe.Pointer(appHwnd))
 	defer w.Destroy()
-
-	// 1. Hide window and child windows immediately to prevent white flash
-	appHwnd = uintptr(w.Window())
-	procShowWindow.Call(appHwnd, SW_HIDE)
-	procEnumChildWindows.Call(appHwnd, hideChildCallback, 0)
-
-	makeFrameless(appHwnd)
 
 	w.Bind("minimizeWindow", func() {
 		procShowWindow.Call(appHwnd, uintptr(SW_MINIMIZE))
@@ -458,15 +716,24 @@ func main() {
 	w.Bind("closeWindow", func() {
 		procPostMessageW.Call(appHwnd, uintptr(WM_CLOSE), 0, 0)
 	})
-	w.Bind("moveWindow", func(deltaX int, deltaY int) {
-		var rect RECT
-		procGetWindowRect.Call(appHwnd, uintptr(unsafe.Pointer(&rect)))
-		procMoveWindow.Call(appHwnd, uintptr(rect.Left+int32(deltaX)), uintptr(rect.Top+int32(deltaY)), uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top), 1)
-	})
-	w.Bind("moveWindowTo", func(x int, y int) {
-		var rect RECT
-		procGetWindowRect.Call(appHwnd, uintptr(unsafe.Pointer(&rect)))
-		procMoveWindow.Call(appHwnd, uintptr(x), uintptr(y), uintptr(rect.Right-rect.Left), uintptr(rect.Bottom-rect.Top), 1)
+	// Native drag: called from JS on titlebar mousedown. Enters the OS's
+	// modal move loop directly (same as clicking a real caption), bypassing
+	// WebView2's hit-test entirely. DPI-correct across monitors.
+	w.Bind("startWindowDrag", func() {
+		// Execute on the UI thread that owns the window: the modal move loop
+		// entered by DefWindowProc(WM_NCLBUTTONDOWN) only behaves correctly on
+		// the thread that created the window (Go bind callbacks otherwise run
+		// on a webview worker thread).
+		w.Dispatch(func() {
+			log.Println("drag: dispatched on UI thread, hwnd =", appHwnd)
+			procReleaseCapture.Call()
+			var pt POINT
+			procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+			// lparam for WM_NCLBUTTONDOWN packs the cursor screen coords.
+			lparam := uintptr(uint16(uint32(pt.X))) | (uintptr(uint16(uint32(pt.Y))) << 16)
+			procSendMessageW.Call(appHwnd, uintptr(WM_NCLBUTTONDOWN), uintptr(HTCAPTION), lparam)
+			log.Println("drag: WM_NCLBUTTONDOWN sent at", pt.X, pt.Y)
+		})
 	})
 	w.Bind("resizeWindow", func(direction string, deltaX int, deltaY int) {
 		var rect RECT
@@ -493,28 +760,18 @@ func main() {
 
 	// 2. Configure window
 	w.SetTitle(instanceTitle)
-	width := 1024
-	height := 768
-
-	// 3. Center window
-	screenW, _, _ := procGetSystemMetrics.Call(uintptr(SM_CXSCREEN))
-	screenH, _, _ := procGetSystemMetrics.Call(uintptr(SM_CYSCREEN))
-	posX := (int(screenW) - width) / 2
-	posY := (int(screenH) - height) / 2
-	if posX < 0 {
-		posX = 0
-	}
-	if posY < 0 {
-		posY = 0
-	}
-	procMoveWindow.Call(appHwnd, uintptr(posX), uintptr(posY), uintptr(width), uintptr(height), 0)
+	// The WebView2 widget is created 0x0; stretch it to our client area once.
+	resizeChildWindows(appHwnd)
 
 	// 4. Fallback: force show after 5 seconds if frontend fails to signal
 	go func() {
 		time.Sleep(5 * time.Second)
 		if appHwnd != 0 {
-			procShowWindow.Call(appHwnd, SW_SHOW)
-			procEnumChildWindows.Call(appHwnd, showChildCallback, 0)
+			visible, _, _ := procIsWindowVisible.Call(appHwnd)
+			if visible == 0 {
+				procShowWindow.Call(appHwnd, SW_SHOW)
+				procEnumChildWindows.Call(appHwnd, showChildCallback, 0)
+			}
 		}
 	}()
 
@@ -536,6 +793,13 @@ func (a *App) runWebServer() {
 		return
 	}
 	r.StaticFS("/static", http.FS(staticFS))
+	// Prevent WebView2/browser from serving stale embedded assets (no mtime → heuristic caching)
+	r.Use(func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/static/") || c.Request.URL.Path == "/" {
+			c.Header("Cache-Control", "no-store")
+		}
+		c.Next()
+	})
 	r.GET("/", func(c *gin.Context) {
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(indexHTML))
 	})
@@ -543,7 +807,6 @@ func (a *App) runWebServer() {
 	// Endpoint to receive frontend ready signal and show main window smoothly
 	r.POST("/ready", func(c *gin.Context) {
 		go func() {
-			time.Sleep(50 * time.Millisecond) // Slight delay to ensure final render is complete
 			if appHwnd != 0 {
 				procShowWindow.Call(appHwnd, SW_SHOW)
 				procEnumChildWindows.Call(appHwnd, showChildCallback, 0)
@@ -567,6 +830,7 @@ func (a *App) runWebServer() {
 	r.POST("/runscript", a.handleRunScript)
 	r.POST("/stopscript", a.handleStopScript)
 	r.POST("/exportlog", a.handleExportLog)
+	r.POST("/exportsession", a.handleExportSession)
 	r.POST("/uploadlog", a.handleUploadLog)
 	r.POST("/browsefile", a.handleBrowseFile)
 	r.POST("/openlog", a.handleOpenLog)
@@ -699,6 +963,8 @@ func (a *App) handleConnect(c *gin.Context) {
 	a.isConnected = true
 	a.writeChan = make(chan []byte, 1024)
 	a.receiveChan = make(chan []byte, 32768)
+	a.sessionLog = StartSessionLog(a.config.Serial.Port, a.config.Log.Path, a.config.UI.Timestamp)
+	a.ioDone = make(chan struct{})
 	go a.readData()
 	go a.processReceiver()
 	go a.writeLoop()
@@ -711,19 +977,21 @@ func (a *App) handleDisconnect(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "not connected"})
 		return
 	}
+	if a.sessionLog != nil {
+		a.sessionLog.Close()
+		a.sessionLog = nil
+	}
 	if a.port != nil {
 		a.port.Close()
 		a.port = nil
 	}
 	a.isConnected = false
-	if a.writeChan != nil {
-		close(a.writeChan)
-		a.writeChan = nil
+	if a.ioDone != nil {
+		close(a.ioDone) // signal reader/processor/writer goroutines to exit
+		a.ioDone = nil
 	}
-	if a.receiveChan != nil {
-		close(a.receiveChan)
-		a.receiveChan = nil
-	}
+	// Do NOT close writeChan/receiveChan: goroutines may still be blocked on
+	// them; they exit via ioDone instead. New channels are created on connect.
 	a.broadcast(map[string]interface{}{"type": "status", "message": "Serial port disconnected"})
 	c.JSON(200, gin.H{"status": "disconnected"})
 }
@@ -854,6 +1122,10 @@ func (a *App) handleSend(c *gin.Context) {
 		return
 	}
 
+	if a.sessionLog != nil {
+		a.sessionLog.Write(">>> " + logStripRegex.ReplaceAllString(string(sendData), "") + "\n")
+	}
+
 	if data != "" && (len(a.sendHistory) == 0 || a.sendHistory[len(a.sendHistory)-1] != data) {
 		a.sendHistory = append(a.sendHistory, data)
 		if len(a.sendHistory) > 100 {
@@ -866,6 +1138,11 @@ func (a *App) handleSend(c *gin.Context) {
 func (a *App) readData() {
 	buf := make([]byte, 4096)
 	for {
+		select {
+		case <-a.ioDone:
+			return
+		default:
+		}
 		if a.port == nil {
 			return
 		}
@@ -890,28 +1167,35 @@ func (a *App) readData() {
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
-			if a.receiveChan != nil {
-				a.receiveChan <- data
+			select {
+			case a.receiveChan <- data:
+			case <-a.ioDone:
+				return
 			}
 		}
 	}
 }
 
 func (a *App) writeLoop() {
-	for data := range a.writeChan {
-		if a.port == nil {
-			continue
-		}
-		remaining := data
-		for len(remaining) > 0 {
-			n, err := a.port.Write(remaining)
-			if err != nil {
-				break
+	for {
+		select {
+		case <-a.ioDone:
+			return
+		case data := <-a.writeChan:
+			if a.port == nil {
+				continue
 			}
-			if n == 0 {
-				time.Sleep(5 * time.Millisecond)
+			remaining := data
+			for len(remaining) > 0 {
+				n, err := a.port.Write(remaining)
+				if err != nil {
+					break
+				}
+				if n == 0 {
+					time.Sleep(5 * time.Millisecond)
+				}
+				remaining = remaining[n:]
 			}
-			remaining = remaining[n:]
 		}
 	}
 }
@@ -925,13 +1209,12 @@ func (a *App) processReceiver() {
 
 	for {
 		select {
-		case b, ok := <-a.receiveChan:
-			if !ok {
-				if len(pending) > 0 {
-					a.processAndBroadcast(pending)
-				}
-				return
+		case <-a.ioDone:
+			if len(pending) > 0 {
+				a.processAndBroadcast(pending)
 			}
+			return
+		case b := <-a.receiveChan:
 			pending = append(pending, b...)
 			if !timer.Stop() {
 				select {
@@ -985,6 +1268,17 @@ func (a *App) processAndBroadcast(data []byte) {
 		}
 	}
 	a.broadcast(map[string]interface{}{"type": "message", "message": msg})
+
+	if a.sessionLog != nil {
+		clean := logStripRegex.ReplaceAllString(string(data), "")
+		if a.config.UI.Shell {
+			a.sessionLog.Write(clean)
+		} else if a.dataMode == "hex" {
+			a.sessionLog.Write(msg + "\n")
+		} else {
+			a.sessionLog.Write(msg + "\n")
+		}
+	}
 
 	if a.scriptEngine != nil && a.scriptEngine.isRunning {
 		cleanData := ansiRegex.ReplaceAllString(string(data), "")
@@ -1048,7 +1342,10 @@ func (se *ScriptEngine) registerAPIs(L *lua.LState) {
 		}
 		data := L.CheckString(1)
 		if se.app.isConnected {
-			se.app.writeChan <- []byte(data)
+			select {
+			case se.app.writeChan <- []byte(data):
+			case <-se.ctx.Done():
+			}
 		}
 		return 0
 	}))
@@ -1102,6 +1399,7 @@ func (se *ScriptEngine) Run(filename string) {
 	se.mu.Lock()
 	if se.isRunning {
 		se.mu.Unlock()
+		se.app.broadcast(map[string]interface{}{"type": "script_log", "message": "⚠️ A script is already running."})
 		return
 	}
 	se.isRunning = true
@@ -1143,6 +1441,10 @@ func (se *ScriptEngine) Stop() {
 	defer se.mu.Unlock()
 	if se.isRunning && se.cancel != nil {
 		se.cancel()
+		/* Mark stopped immediately: the script goroutine may take a moment to unwind
+		(e.g. blocked inside send()/wait()); without this, a subsequent Run() is silently
+		swallowed by the isRunning check while the old goroutine is still exiting. */
+		se.isRunning = false
 		se.app.broadcast(map[string]interface{}{"type": "script_log", "message": "🛑 Script forcefully stopped."})
 	}
 }
@@ -1211,6 +1513,63 @@ func (a *App) handleExportLog(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{"status": "ok", "path": req.Path})
+}
+
+/**
+ * @brief Copies the current session log file to a user-specified path.
+ *        The frontend never assembles the content itself — zero main-thread cost.
+ */
+func (a *App) handleExportSession(c *gin.Context) {
+	var req struct {
+		Path string `json:"path"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": "Invalid request: " + err.Error()})
+		return
+	}
+	if req.Path == "" {
+		c.JSON(200, gin.H{"status": "error", "message": "File path is required"})
+		return
+	}
+	src := a.sessionLog.Path()
+	if src == "" {
+		// Session already closed — fall back to the most recent log for this port.
+		matches, _ := filepath.Glob(filepath.Join(a.config.Log.Path, sanitizeLogName(a.config.Serial.Port)+"_*.log"))
+		if len(matches) > 0 {
+			sort.Strings(matches)
+			src = matches[len(matches)-1]
+		}
+	}
+	if src == "" {
+		c.JSON(200, gin.H{"status": "error", "message": "No session log available (was the port ever connected?)"})
+		return
+	}
+	a.sessionLog.Flush() // ensure buffered lines are on disk before copying
+	if err := copyFile(src, req.Path); err != nil {
+		c.JSON(200, gin.H{"status": "error", "message": "Failed to copy log: " + err.Error()})
+		return
+	}
+	c.JSON(200, gin.H{"status": "ok", "path": req.Path, "source": src, "lines": nil})
+}
+
+// copyFile streams src to dst without loading it all into memory.
+func copyFile(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	buf := make([]byte, 1024*1024)
+	_, err = io.CopyBuffer(out, in, buf)
+	return err
 }
 
 /**

@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SerialZero</title>
+    <!-- Inline dark background BEFORE the external stylesheet loads:
+         WebView2 paints the first frame with the document background, so
+         without this the window flashes white until style.css arrives. -->
+    <style>html, body { background-color: #1e1e1e; }</style>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/lib/xterm.css">
 </head>

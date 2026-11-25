@@ -34,6 +34,17 @@ const MAX_OUTPUT_LINES = 500000;
 const FLUSH_BATCH_SIZE = 500;
 let outputTrimOffset = 0;
 
+// --- Virtual Scrolling State (traditional mode) ---
+// Only a window of rows around the viewport lives in the DOM; outputMessages
+// (plain text) is the single source of truth. Rows are recreated on scroll.
+let vsEstRowHeight = 21;      // measured average row height (updated on render)
+const VS_OVERSCAN = 60;      // rows rendered above/below viewport
+let vsWindowFirst = 0;       // first rendered row index (in outputMessages)
+let vsNeedsInit = true;      // spacers not yet created in #output
+let vsRenderPending = false;
+let vsAutoScroll = true;     // stick to bottom while user hasn't scrolled up
+let vsLastTotal = -1;
+
 // --- DOM References ---
 let termContainer = document.getElementById('terminal-container');
 let outputContainer = document.getElementById('output-container');
@@ -298,7 +309,7 @@ function processFilterLine(text, filterRegex) {
     let fmMatches = [];
 
     if (combinedHighlightRegex) {
-        const hlRegex = new RegExp(combinedHighlightRegex.source, combinedHighlightRegex.flags);
+        const hlRegex = combinedHighlightRegex; // exec loop manages lastIndex itself
         let match;
         while ((match = hlRegex.exec(text)) !== null) {
             for (let i = 0; i < highlightColorMap.length; i++) {
@@ -312,7 +323,7 @@ function processFilterLine(text, filterRegex) {
     }
 
     if (filterRegex && filterRegex.source && filterRegex.source !== '(?:)') {
-        const fmRegex = new RegExp(filterRegex.source, filterRegex.flags);
+        const fmRegex = filterRegex; // exec loop manages lastIndex itself
         let match;
         while ((match = fmRegex.exec(text)) !== null) {
             if (match[0].length > 0) {
@@ -389,7 +400,7 @@ function buildFilterRowHTML(text, lineIndex, filterRegex) {
 
 function getDigitWidth(digits) { return String(digits).length * 8 + 16; }
 let _lastGlobalLineNumWidth = 0;
-function updateGlobalLineNumWidth(maxCount) { if (maxCount === _lastGlobalLineNumWidth) return; _lastGlobalLineNumWidth = maxCount; const width = getDigitWidth(maxCount); document.documentElement.style.setProperty('--line-num-width', `${width}px`); document.querySelectorAll('.filter-line-num').forEach(el => { el.style.width = `${width}px`; }); document.querySelectorAll('.log-row-num').forEach(el => { el.style.width = `${width}px`; }); }
+function updateGlobalLineNumWidth(maxCount) { if (maxCount === _lastGlobalLineNumWidth) return; _lastGlobalLineNumWidth = maxCount; const width = getDigitWidth(maxCount); document.documentElement.style.setProperty('--line-num-width', `${width}px`); }
 function stripAnsi(str) { return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); }
 
 let filterRenderGen = 0;
@@ -403,9 +414,10 @@ function scheduleLogFilterUpdate(regex, outputEl, tabId) {
     filterUpdateTimer = setTimeout(() => { runFullLogFilter(regex, outputEl, tabId); filterUpdateTimer = null; }, 500);
 }
 
-function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType, filterRegex) { const div = document.createElement('div'); div.className = 'filter-row'; div.dataset.lineIndex = lineIndex; const numSpan = document.createElement('span'); numSpan.className = 'filter-line-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = lineIndex + 1; const textSpan = document.createElement('span'); textSpan.className = 'filter-text'; textSpan.innerHTML = processFilterLine(text, filterRegex); div.appendChild(numSpan); div.appendChild(textSpan); outputEl.appendChild(div); if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) { outputEl.scrollTop = outputEl.scrollHeight; } }
+const MAX_FILTER_ROWS = 5000;
+function appendToSpecificFilterOutput(text, lineIndex, outputEl, sourceType, filterRegex) { const div = document.createElement('div'); div.className = 'filter-row'; div.dataset.lineIndex = lineIndex; const numSpan = document.createElement('span'); numSpan.className = 'filter-line-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = lineIndex + 1; const textSpan = document.createElement('span'); textSpan.className = 'filter-text'; textSpan.innerHTML = processFilterLine(text, filterRegex); div.appendChild(numSpan); div.appendChild(textSpan); outputEl.appendChild(div); while (outputEl.children.length > MAX_FILTER_ROWS) { outputEl.removeChild(outputEl.firstChild); } if (outputEl.scrollHeight - outputEl.scrollTop <= outputEl.clientHeight + 50) { outputEl.scrollTop = outputEl.scrollHeight; } }
 
-function jumpToLine(index, type) { if (type.startsWith('log_')) { const tabData = logTabs[type]; if (tabData && tabData.view) { tabData.view.jumpToLine(index); } } else if (shellEnabled && term) { const currentY = term.buffer.active.viewportY; term.scrollLines(index - currentY); if (timeGutter) timeGutter.flashLine(index); } else { let output = document.getElementById('output'); let trimOffset = outputTrimOffset; const realIndex = index - trimOffset; if (realIndex >= 0 && realIndex < output.children.length) { const target = output.children[realIndex]; target.scrollIntoView({ behavior: 'smooth', block: 'center' }); target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } } }
+function jumpToLine(index, type) { if (type.startsWith('log_')) { const tabData = logTabs[type]; if (tabData && tabData.view) { tabData.view.jumpToLine(index); } } else if (shellEnabled && term) { const currentY = term.buffer.active.viewportY; term.scrollLines(index - currentY); if (timeGutter) timeGutter.flashLine(index); } else { const output = document.getElementById('output'); const realIndex = index - outputTrimOffset; if (realIndex >= 0 && realIndex < outputMessages.length) { output.scrollTop = realIndex * vsEstRowHeight - output.clientHeight / 2; vsAutoScroll = false; vsScheduleRender(); setTimeout(() => { const target = Array.prototype.slice.call(output.children).find(c => c.classList && c.classList.contains('log-row') && c.firstChild && parseInt(c.firstChild.textContent) === index + 1); if (target) { target.classList.add('flash-highlight'); setTimeout(() => target.classList.remove('flash-highlight'), 1000); } }, 50); } } }
 
 function runFullFilter() {
     if (!filterRegex) return;
@@ -458,20 +470,20 @@ function runFullLogFilter(regex, outputEl, tabId) {
 // ================= TIME GUTTER =================
 class TimeGutter {
     constructor(element) { this.el = element; this.markers = []; this.lineTimestamps = []; this.cellHeight = 0; this.term = null; this.viewport = null; this.renderPending = false; }
-    bindTerminal(term) { this.term = term; this.viewport = term.element.querySelector('.xterm-viewport'); if (!this.viewport) return; this.tryGetCellHeight(); this.syncFont(); term.onLineFeed(() => { const buffer = this.term.buffer.active; const completedIndex = buffer.baseY + buffer.cursorY - 1; if (completedIndex < 0) return; let logicalStart = completedIndex; while (logicalStart > 0) { const line = buffer.getLine(logicalStart); if (line && line.isWrapped) { logicalStart--; } else { break; } } const startLine = buffer.getLine(logicalStart); if (startLine && !startLine.isWrapped) { const lineText = startLine.translateToString(true).trim(); if (lineText.length > 0) { const now = new Date(); const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}.${now.getMilliseconds().toString().padStart(3,'0')}`; const offset = logicalStart - (buffer.baseY + buffer.cursorY); let marker = null; try { if (typeof this.term.registerMarker === 'function') { marker = this.term.registerMarker(offset); } else if (typeof this.term.addMarker === 'function') { marker = this.term.addMarker(offset); } } catch(e) {} if (marker) { this.markers.push({ marker, ts }); marker.onDispose(() => { this.markers = this.markers.filter(m => m.marker !== marker); this.scheduleRender(); }); } else { while (this.lineTimestamps.length <= logicalStart) { this.lineTimestamps.push(''); } this.lineTimestamps[logicalStart] = ts; } } } this.scheduleRender(); }); this.viewport.addEventListener('scroll', () => this.scheduleRender()); term.onResize(() => { this.tryGetCellHeight(); this.syncFont(); this.scheduleRender(); }); }
+    bindTerminal(term) { this.term = term; this.viewport = term.element.querySelector('.xterm-viewport'); if (!this.viewport) return; this.tryGetCellHeight(); this.syncFont(); term.onLineFeed(() => { const buffer = this.term.buffer.active; const completedIndex = buffer.baseY + buffer.cursorY - 1; if (completedIndex < 0) return; let logicalStart = completedIndex; while (logicalStart > 0) { const line = buffer.getLine(logicalStart); if (line && line.isWrapped) { logicalStart--; } else { break; } } const startLine = buffer.getLine(logicalStart); if (startLine && !startLine.isWrapped) { const lineText = startLine.translateToString(true).trim(); if (lineText.length > 0) { const now = new Date(); const ts = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}.${now.getMilliseconds().toString().padStart(3,'0')}`; const offset = logicalStart - (buffer.baseY + buffer.cursorY); let marker = null; try { if (typeof this.term.registerMarker === 'function') { marker = this.term.registerMarker(offset); } else if (typeof this.term.addMarker === 'function') { marker = this.term.addMarker(offset); } } catch(e) {} if (marker) { this.markers.push({ marker, ts }); } else { while (this.lineTimestamps.length <= logicalStart) { this.lineTimestamps.push(''); } this.lineTimestamps[logicalStart] = ts; } } } this.scheduleRender(); }); this.viewport.addEventListener('scroll', () => this.scheduleRender()); term.onResize(() => { this.tryGetCellHeight(); this.syncFont(); this.scheduleRender(); }); }
     syncFont() { const userFont = document.getElementById('font-input').value; this.el.style.fontFamily = getFullFontStack(userFont); }
     tryGetCellHeight() { if (!this.term || !this.term.element) return; try { this.cellHeight = this.term._core._renderService.dimensions.actualCellHeight; } catch(e) {} if (!this.cellHeight || this.cellHeight <= 0) { const row = this.term.element.querySelector('.xterm-rows > div'); if (row) this.cellHeight = row.getBoundingClientRect().height; } if (!this.cellHeight || this.cellHeight <= 0) { setTimeout(() => this.tryGetCellHeight(), 100); } }
-    reset() { this.markers.forEach(m => { try { m.marker.dispose(); } catch(e) {} }); this.markers = []; this.lineTimestamps = []; this.el.innerHTML = ''; }
+    reset() { /* Do NOT dispose markers individually: term.reset() already replaced the buffers, so old markers are garbage. Disposing 40k markers triggers buffer._removeMarker splice-in-loop (O(n^2)) plus our onDispose filter (another O(n^2)) - that was the multi-second shell clear. Just drop the references. */ this.markers = []; this.lineTimestamps = []; this.el.innerHTML = ''; }
     flashLine(lineIndex) { const lines = this.el.querySelectorAll('.gutter-line'); lines.forEach(line => { const numEl = line.querySelector('.line-num-col'); if (numEl && parseInt(numEl.textContent) === lineIndex + 1) { line.classList.add('flash-highlight'); setTimeout(() => line.classList.remove('flash-highlight'), 1000); } }); }
     scheduleRender() { if (!this.renderPending) { this.renderPending = true; requestAnimationFrame(() => { this.render(); this.renderPending = false; }); } }
-    render() { if (!this.term || !this.cellHeight || !this.viewport) return; const buffer = this.term.buffer.active; const scrollTop = this.viewport.scrollTop; const startRow = Math.round(scrollTop / this.cellHeight); const viewportHeight = this.viewport.clientHeight; const rowCount = Math.ceil(viewportHeight / this.cellHeight) + 2; const endRow = startRow + rowCount; const maxLine = buffer.length; const numWidth = getDigitWidth(maxLine); const timeWidth = timestampEnabled ? 90 : 0; this.el.style.width = `${numWidth + timeWidth}px`; if (timestampEnabled) this.el.classList.add('has-timestamps'); else this.el.classList.remove('has-timestamps'); const markerMap = {}; this.markers.forEach(m => { if (!m.marker.isDisposed) markerMap[m.marker.line] = m.ts; }); let html = ''; for (let i = startRow; i < endRow; i++) { if (i < 0) continue; const top = (i * this.cellHeight) - scrollTop; const lineNum = i + 1; let ts = markerMap[i] || this.lineTimestamps[i] || ''; html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;"><span class="line-num-col" style="width: ${numWidth}px">${lineNum}</span>${timestampEnabled ? `<span class="time-col">${ts}</span>` : ''}</div>`; } this.el.innerHTML = html; }
+    render() { if (!this.term || !this.cellHeight || !this.viewport) return; const buffer = this.term.buffer.active; const scrollTop = this.viewport.scrollTop; const startRow = Math.round(scrollTop / this.cellHeight); const viewportHeight = this.viewport.clientHeight; const rowCount = Math.ceil(viewportHeight / this.cellHeight) + 2; const endRow = startRow + rowCount; const maxLine = buffer.length; const numWidth = getDigitWidth(maxLine); const timeWidth = timestampEnabled ? 90 : 0; this.el.style.width = `${numWidth + timeWidth}px`; if (timestampEnabled) this.el.classList.add('has-timestamps'); else this.el.classList.remove('has-timestamps'); const markerMap = {}; let disposedCount = 0; this.markers.forEach(m => { if (!m.marker.isDisposed) markerMap[m.marker.line] = m.ts; else disposedCount++; }); if (disposedCount > 500 && disposedCount > this.markers.length / 2) { this.markers = this.markers.filter(m => !m.marker.isDisposed); } let html = ''; for (let i = startRow; i < endRow; i++) { if (i < 0) continue; const top = (i * this.cellHeight) - scrollTop; const lineNum = i + 1; let ts = markerMap[i] || this.lineTimestamps[i] || ''; html += `<div class="gutter-line" style="top: ${top}px; height: ${this.cellHeight}px;"><span class="line-num-col" style="width: ${numWidth}px">${lineNum}</span>${timestampEnabled ? `<span class="time-col">${ts}</span>` : ''}</div>`; } this.el.innerHTML = html; }
 }
 
 // ================= CORE LOGIC =================
 function getFullFontStack(userFont) { if (!userFont || userFont.trim() === '') { return DEFAULT_FONT_STACK; } return `${userFont}, ${DEFAULT_FONT_STACK}`; }
 function syncShellUI(enabled) { if (enabled) { outputContainer.style.display = 'none'; shellArea.style.display = 'flex'; inputArea.style.display = 'none'; updateGutterVisibility(); } else { outputContainer.style.display = 'flex'; shellArea.style.display = 'none'; inputArea.style.display = 'flex'; } }
 function updateGutterVisibility() { if (!timeGutterEl) return; timeGutterEl.style.display = 'block'; if(timeGutter) timeGutter.render(); if(term && fitAddon) fitAddon.fit(); }
-function initWebSocket() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => console.log('WebSocket connected'); ws.onmessage = (event) => { try { const data = JSON.parse(event.data); switch(data.type) { case 'message': if (shellEnabled) { if (term) { let msg = data.message.replace(/\r?\n/g, '\r\n'); term.write(applyShellHighlight(msg)); scheduleFilterUpdate(); } else addToOutput(data.message); } else { addToOutput(data.message); } break; case 'script_log': appendToScriptConsole(data.message); break; case 'config': if (data.config) updateConfig(data.config); if (data.connected !== undefined) updateConnectionStatus(data.connected); if (data.mode) updateMode(data.mode); break; case 'status': console.log('Status:', data.message); break; case 'mode': updateMode(data.mode); break; case 'clear': clearOutput(false); break; } } catch (error) { console.error('Parse error:', error); } }; ws.onclose = () => setTimeout(initWebSocket, 1000); ws.onerror = (error) => console.error('WS error:', error); }
+function initWebSocket() { const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'; ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`); ws.onopen = () => console.log('WebSocket connected'); ws.onmessage = (event) => { try { const data = JSON.parse(event.data); switch(data.type) { case 'message': if (shellEnabled) { if (term) { let msg = data.message.replace(/\r?\n/g, '\r\n'); term.write(applyShellHighlight(msg)); scheduleFilterUpdate(); } else addToOutput(data.message); } else { addToOutput(cleanTraditionalLine(data.message)); } break; case 'script_log': appendToScriptConsole(data.message); break; case 'config': if (data.config) updateConfig(data.config); if (data.connected !== undefined) updateConnectionStatus(data.connected); if (data.mode) updateMode(data.mode); break; case 'status': console.log('Status:', data.message); break; case 'mode': updateMode(data.mode); break; case 'clear': clearOutput(false); break; } } catch (error) { console.error('Parse error:', error); } }; ws.onclose = () => setTimeout(initWebSocket, 1000); ws.onerror = (error) => console.error('WS error:', error); }
 function setupSidebarFocusManagement() { document.querySelectorAll('#sidebar input, #sidebar select, #sidebar textarea').forEach(el => { el.addEventListener('mousedown', function(e) { if (term) term.blur(); }); el.addEventListener('focus', function() { if (term) term.blur(); }); }); }
 function setupEventListeners() { document.getElementById('tab-bar').addEventListener('click', (e) => { const tab = e.target.closest('.tab'); if (tab) { if (e.target.classList.contains('tab-close')) { closeLogTab(tab.dataset.tab); } else { switchTab(tab.dataset.tab); } } }); document.getElementById('connect-btn').addEventListener('click', toggleConnection); document.getElementById('scan-btn').addEventListener('click', scanPorts); document.getElementById('clear-btn').addEventListener('click', () => clearOutput(true)); document.getElementById('export-btn').addEventListener('click', exportLog); document.getElementById('send-btn').addEventListener('click', sendData); document.getElementById('save-config-btn').addEventListener('click', saveConfig); document.getElementById('input').addEventListener('keydown', handleInputKeydown); document.getElementById('toggle-sidebar-btn').addEventListener('click', () => { document.getElementById('sidebar').classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('send-toggle-btn').addEventListener('click', function() { const area = document.getElementById('input-area'); area.classList.toggle('collapsed'); this.textContent = area.classList.contains('collapsed') ? '▼ Send' : '▲ Send'; }); document.getElementById('toggle-script-btn').addEventListener('click', () => { const panel = document.getElementById('script-panel'); panel.classList.toggle('collapsed'); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 250); }); document.getElementById('refresh-scripts-btn').addEventListener('click', listScripts); document.getElementById('run-script-btn').addEventListener('click', runScript); document.getElementById('stop-script-btn').addEventListener('click', stopScript); document.getElementById('ascii-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('hex-mode').addEventListener('change', function() { if (this.checked) setMode(this.value); }); document.getElementById('timestamp-on').addEventListener('change', function() { if (this.checked) setTimestamp(true); }); document.getElementById('timestamp-off').addEventListener('change', function() { if (this.checked) setTimestamp(false); }); document.getElementById('shell-on').addEventListener('change', function() { if (this.checked) setShellEnabled(true); }); document.getElementById('shell-off').addEventListener('change', function() { if (this.checked) setShellEnabled(false); }); document.getElementById('theme-preset-select').addEventListener('change', handleThemePresetChange); document.getElementById('theme-bg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-fg').addEventListener('input', handleCustomThemeChange); document.getElementById('theme-cursor').addEventListener('input', handleCustomThemeChange); document.querySelector('.close').addEventListener('click', closeModal); window.addEventListener('click', (event) => { if (event.target == document.getElementById('modal')) closeModal(); }); document.getElementById('import-log-btn').addEventListener('click', () => {
         document.getElementById('import-log-input').click();
@@ -493,33 +505,25 @@ function setupTitlebar() {
     document.getElementById('titlebar-title').textContent = 'SerialZero :' + port;
 
     const titlebar = document.querySelector('.titlebar');
-    titlebar.addEventListener('dblclick', () => {
-        if (typeof toggleMaximizeWindow !== 'undefined') toggleMaximizeWindow();
-        btnMax.textContent = btnMax.textContent === '□' ? '❐' : '□';
-    });
 
-    let dragActive = false;
-    let dragWinX = 0, dragWinY = 0;
-    let dragMouseX = 0, dragMouseY = 0;
-
+    // Dragging + double-click, both handled on mousedown:
+    // mousedown calls startWindowDrag(), which sends WM_NCLBUTTONDOWN(HTCAPTION)
+    // to the host window - the OS enters its native modal move loop directly
+    // (DPI-correct across monitors). That modal loop swallows subsequent mouse
+    // events, so a 'dblclick' event never fires - the double-click must be
+    // detected here via e.detail (== 2 on the second click of a double-click).
     titlebar.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.titlebar-btn')) return;
-        dragActive = true;
-        dragMouseX = e.screenX;
-        dragMouseY = e.screenY;
-        dragWinX = window.screenX || 0;
-        dragWinY = window.screenY || 0;
-    });
-
-    document.addEventListener('mousemove', (e) => {
-        if (!dragActive) return;
-        const newX = dragWinX + (e.screenX - dragMouseX);
-        const newY = dragWinY + (e.screenY - dragMouseY);
-        if (typeof moveWindowTo !== 'undefined') moveWindowTo(newX, newY);
-    });
-
-    document.addEventListener('mouseup', () => {
-        dragActive = false;
+        if (e.button !== 0) return;
+        if (e.target.closest('.titlebar-btn')) return; // buttons stay clickable
+        if (e.detail >= 2) {
+            // Double-click on the titlebar: toggle maximize/restore.
+            if (typeof toggleMaximizeWindow !== 'undefined') toggleMaximizeWindow();
+            btnMax.textContent = btnMax.textContent === '□' ? '❐' : '□';
+            e.preventDefault();
+            return;
+        }
+        if (typeof startWindowDrag !== 'undefined') startWindowDrag();
+        e.preventDefault();
     });
 }
 
@@ -590,10 +594,79 @@ function handleImportLog(file) {
 }
 function addToOutput(text) { outputMessages.push(text); pendingMessages.push(text); scheduleOutputUpdate(); if (isFilterEnabled && filterRegex && filterRegex.test(text)) { appendToSpecificFilterOutput(text, outputMessages.length - 1 + outputTrimOffset, filterOutput, 'main', filterRegex); } }
 function scheduleOutputUpdate() { if (!updateTimer) updateTimer = setTimeout(flushOutput, 16); }
-function flushOutput() { updateTimer = null; if (pendingMessages.length === 0) return; const output = document.getElementById('output'); const fragment = document.createDocumentFragment(); const batch = pendingMessages.splice(0, FLUSH_BATCH_SIZE); updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset); batch.forEach(msg => { const rowDiv = document.createElement('div'); rowDiv.className = 'log-row'; const numSpan = document.createElement('div'); numSpan.className = 'log-row-num'; numSpan.style.width = `var(--line-num-width)`; numSpan.textContent = (outputMessages.length + outputTrimOffset); const textSpan = document.createElement('div'); textSpan.className = 'log-row-text'; textSpan.innerHTML = processLogLine(msg); rowDiv.appendChild(numSpan); rowDiv.appendChild(textSpan); fragment.appendChild(rowDiv); }); output.appendChild(fragment); while (output.children.length > MAX_OUTPUT_LINES) { output.removeChild(output.firstChild); outputMessages.shift(); outputTrimOffset++; } output.scrollTop = output.scrollHeight; if (pendingMessages.length > 0) scheduleOutputUpdate(); }
+// ===== Virtual scrolling for the traditional log view =====
+function vsEnsureSpacers(output) { if (vsNeedsInit) { output.innerHTML = '<div id="vs-top-spacer" style="height:0"></div><div id="vs-bottom-spacer" style="height:0"></div>'; vsNeedsInit = false; vsWindowFirst = -1; } }
+function vsScheduleRender() { if (!vsRenderPending) { vsRenderPending = true; requestAnimationFrame(vsRenderWindow); } }
+function vsRenderWindow() {
+    vsRenderPending = false;
+    if (shellEnabled && term) return;           // shell mode owns the viewport
+    const output = document.getElementById('output');
+    if (!output) return;
+    vsEnsureSpacers(output);
+    const total = outputMessages.length;
+    const topSp = document.getElementById('vs-top-spacer');
+    const botSp = document.getElementById('vs-bottom-spacer');
+    if (!topSp || !botSp) return;
+    if (total === 0) { if (vsWindowFirst !== 0) { output.innerHTML = '<div id="vs-top-spacer" style="height:0"></div><div id="vs-bottom-spacer" style="height:0"></div>'; vsWindowFirst = 0; } return; }
+    const viewH = output.clientHeight || 600;
+    const viewportRows = Math.ceil(viewH / Math.max(vsEstRowHeight, 8)) + 1;
+    // Determine first row to render, based on scrollTop (approximate anchor)
+    let first = Math.floor(output.scrollTop / vsEstRowHeight) - VS_OVERSCAN;
+    first = Math.max(0, Math.min(first, total - viewportRows - VS_OVERSCAN));
+    const count = Math.min(total - first, viewportRows + 2 * VS_OVERSCAN);
+    // Skip only if identical window AND unchanged total (prevents re-render loops).
+    if (first === vsWindowFirst && count === vsWindowCount && vsLastTotal === total) return;
+    vsLastTotal = total;
+    const frag = document.createDocumentFragment();
+    for (let i = 0; i < count; i++) {
+        const idx = first + i;
+        const rowDiv = document.createElement('div');
+        rowDiv.className = 'log-row';
+        const numSpan = document.createElement('div');
+        numSpan.className = 'log-row-num';
+        numSpan.textContent = outputTrimOffset + idx + 1;
+        const textSpan = document.createElement('div');
+        textSpan.className = 'log-row-text';
+        textSpan.innerHTML = processLogLine(outputMessages[idx]);
+        rowDiv.appendChild(numSpan); rowDiv.appendChild(textSpan);
+        frag.appendChild(rowDiv);
+    }
+    // Replace previously rendered rows (keep the two spacers)
+    while (output.children.length > 2) output.removeChild(output.children[1]);
+    output.insertBefore(frag, botSp);
+    vsWindowFirst = first; vsWindowCount = count;
+    topSp.style.height = (first * vsEstRowHeight) + 'px';
+    botSp.style.height = Math.max(0, (total - first - count) * vsEstRowHeight) + 'px';
+    // Measure real average height from rendered rows to refine the estimate
+    if (count > 0 && output.children.length > 2) {
+        const rowsH = output.children[output.children.length - 2].offsetTop - output.children[1].offsetTop;
+        if (rowsH > 0) {
+            const measured = rowsH / count;
+            if (measured > 4 && measured < 200 && Math.abs(measured - vsEstRowHeight) / vsEstRowHeight > 0.05) {
+                const scrollFrac = output.scrollHeight > 0 ? output.scrollTop / output.scrollHeight : 0;
+                vsEstRowHeight = Math.round(measured);
+                topSp.style.height = (first * vsEstRowHeight) + 'px';
+                botSp.style.height = Math.max(0, (total - first - count) * vsEstRowHeight) + 'px';
+                if (vsAutoScroll) output.scrollTop = output.scrollHeight;
+                else output.scrollTop = Math.round(scrollFrac * output.scrollHeight);
+            }
+        }
+    }
+    if (vsAutoScroll) output.scrollTop = output.scrollHeight;
+}
+let vsWindowCount = 0;
+function vsOnScroll() {
+    const output = document.getElementById('output');
+    if (!output) return;
+    // Bottom-stick detection: user at (or within 2 rows of) the bottom stays stuck
+    const nearBottom = output.scrollHeight - output.scrollTop - output.clientHeight <= 2 * Math.max(vsEstRowHeight, 8);
+    vsAutoScroll = nearBottom;
+    vsScheduleRender();
+}
+function flushOutput() { updateTimer = null; if (pendingMessages.length === 0) return; pendingMessages.splice(0, FLUSH_BATCH_SIZE); updateGlobalLineNumWidth(outputMessages.length + outputTrimOffset); while (outputMessages.length > MAX_OUTPUT_LINES) { outputMessages.shift(); outputTrimOffset++; } if (pendingMessages.length > 0) scheduleOutputUpdate(); vsScheduleRender(); }
 
 // ================= UTILITY & CONFIG =================
-function applyFontSettings(font, size) { const output = document.getElementById('output'); const fullFont = getFullFontStack(font); output.style.fontFamily = fullFont; output.style.fontSize = size + 'px'; document.documentElement.style.setProperty('--log-font-size', `${size}px`); document.documentElement.style.setProperty('--gutter-font-size', `${Math.max(10, size - 1)}px`); const highlightInput = document.getElementById('highlight-input'); if(highlightInput) { highlightInput.style.fontFamily = fullFont; highlightInput.style.fontSize = `${size}px`; } const mainFilterOutput = document.getElementById('filter-output'); if(mainFilterOutput) { mainFilterOutput.style.fontFamily = fullFont; mainFilterOutput.style.fontSize = size + 'px'; } Object.keys(logTabs).forEach(tabId => { const logOutput = document.getElementById(`${tabId}_output`); const logFilterOutput = document.getElementById(`${tabId}_filter_output`); if(logOutput) { logOutput.style.fontFamily = fullFont; logOutput.style.fontSize = `var(--log-font-size)`; } if(logFilterOutput) { logFilterOutput.style.fontFamily = fullFont; logFilterOutput.style.fontSize = size + 'px'; } }); if (term) { term.setOption('fontFamily', fullFont); term.setOption('fontSize', parseInt(size)); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } if (timeGutter) timeGutter.syncFont(); }
+function applyFontSettings(font, size) { const output = document.getElementById('output'); const fullFont = getFullFontStack(font); output.style.fontFamily = fullFont; output.style.fontSize = size + 'px'; document.documentElement.style.setProperty('--log-font-size', `${size}px`); document.documentElement.style.setProperty('--gutter-font-size', `${Math.max(10, size - 1)}px`); const highlightInput = document.getElementById('highlight-input'); if(highlightInput) { highlightInput.style.fontFamily = fullFont; highlightInput.style.fontSize = `${size}px`; } const mainFilterOutput = document.getElementById('filter-output'); if(mainFilterOutput) { mainFilterOutput.style.fontFamily = fullFont; mainFilterOutput.style.fontSize = size + 'px'; } Object.keys(logTabs).forEach(tabId => { const logOutput = document.getElementById(`${tabId}_output`); const logFilterOutput = document.getElementById(`${tabId}_filter_output`); if(logOutput) { logOutput.style.fontFamily = fullFont; logOutput.style.fontSize = `var(--log-font-size)`; } if(logFilterOutput) { logFilterOutput.style.fontFamily = fullFont; logFilterOutput.style.fontSize = size + 'px'; } }); if (term) { term.options.fontFamily = fullFont; term.options.fontSize = parseInt(size); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } if (timeGutter) timeGutter.syncFont(); }
 function updatePortInfo(port, baud) { document.getElementById('port-info').textContent = `${port} | ${baud}`; }
 function loadConfig() { fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => { updateConfig(data.config, true); updateConnectionStatus(data.connected); updateMode(data.mode); const configShell = (data.config && data.config.UI) ? data.config.UI.Shell : true; setShellEnabled(configShell, false); requestAnimationFrame(() => { requestAnimationFrame(() => { fetch('/ready', { method: 'POST' }); }); }); }).catch(err => { console.error('Config load failed:', err); shellEnabled = false; syncShellUI(false); fetch('/ready', { method: 'POST' }); }); }
 function updateConfig(config, isInitial = false) { if (!config) return; if (config.Serial) { document.getElementById('port-input').value = config.Serial.Port || 'COM1'; document.getElementById('baud-input').value = config.Serial.Baud || 9600; document.getElementById('databits-select').value = config.Serial.Databits || 8; document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1; document.getElementById('parity-select').value = config.Serial.Parity || 'N'; updatePortInfo(config.Serial.Port, config.Serial.Baud); } if (config.UI) { document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace'; document.getElementById('fontsize-input').value = config.UI.FontSize || 14; document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000; applyFontSettings(config.UI.Font, config.UI.FontSize); updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true); if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true); } if (config.Highlight && config.Highlight.Groups) { const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : ["error:#ff0000", "warn:#ffa500"]; document.getElementById('highlight-input').value = groups.join('\n'); updateHighlightRules(groups); renderHighlightPreviewStrip(); } if (config.Theme) { const name = config.Theme.Name || "Default"; document.getElementById('theme-preset-select').value = name; if (name === "Custom") { document.getElementById('custom-theme-area').style.display = 'flex'; document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e'; document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc'; document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff'; applyTheme(config.Theme); } else { document.getElementById('custom-theme-area').style.display = 'none'; applyTheme(themePresets[name]); } } }
@@ -603,15 +676,15 @@ function saveConfigSilently() { fetch('/saveconfig', { method: 'POST', headers: 
 function getFormData() { const themeName = document.getElementById('theme-preset-select').value; let themeData = { Name: themeName }; if (themeName === "Custom") { themeData.Background = document.getElementById('theme-bg').value; themeData.Foreground = document.getElementById('theme-fg').value; themeData.Cursor = document.getElementById('theme-cursor').value; Object.assign(themeData, themePresets["Default"]); } else { const preset = themePresets[themeName]; if(preset) Object.assign(themeData, preset); } return { Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value }, UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled, Scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000 }, Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) }, Log: { Path: './logs' }, Theme: themeData }; }
 
 // ================= REST OF HELPER FUNCTIONS =================
-function setupSmartCopy() { const output = document.getElementById('output'); output.addEventListener('keydown', function(e) { if (e.key === 'Enter') { const selection = window.getSelection().toString(); if (selection) { e.preventDefault(); navigator.clipboard.writeText(selection).catch(err => {}); } } }); }
+function setupSmartCopy() { const output = document.getElementById('output'); output.addEventListener('scroll', vsOnScroll, { passive: true }); output.addEventListener('keydown', function(e) { if (e.key === 'Enter') { const selection = window.getSelection().toString(); if (selection) { e.preventDefault(); navigator.clipboard.writeText(selection).catch(err => {}); } } }); }
 function setupKeyboardShortcuts() { document.addEventListener('keydown', function(event) { if (event.target.tagName === 'INPUT' && event.target.id !== 'input') return; if (event.key === 'F2') { event.preventDefault(); toggleConnection(); } else if (event.key === 'F3') { event.preventDefault(); scanPorts(); } else if (event.key === 'Escape') { event.preventDefault(); closeModal(); } }); }
 function adjustColor(hex, amount) { hex = hex.replace('#', ''); let r = parseInt(hex.substring(0, 2), 16); let g = parseInt(hex.substring(2, 4), 16); let b = parseInt(hex.substring(4, 6), 16); r = Math.min(255, Math.max(0, r + amount)); g = Math.min(255, Math.max(0, g + amount)); b = Math.min(255, Math.max(0, b + amount)); return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`; }
-function applyTheme(themeData) { if (!themeData) return; const root = document.documentElement; const bgLuminance = parseInt(themeData.Background.substring(1, 3), 16) + parseInt(themeData.Background.substring(3, 5), 16) + parseInt(themeData.Background.substring(5, 7), 16); const isDark = bgLuminance < 384; const step = isDark ? 15 : -15; root.style.setProperty('--bg-primary', themeData.Background); root.style.setProperty('--bg-secondary', adjustColor(themeData.Background, step)); root.style.setProperty('--bg-tertiary', adjustColor(themeData.Background, step * 2)); root.style.setProperty('--border-color', adjustColor(themeData.Background, step * 3)); root.style.setProperty('--text-primary', themeData.Foreground); root.style.setProperty('--text-secondary', adjustColor(themeData.Foreground, isDark ? -80 : 80)); root.style.setProperty('--accent-color', themeData.Blue); root.style.setProperty('--accent-hover', adjustColor(themeData.Blue, isDark ? 30 : -30)); root.style.setProperty('--danger-color', themeData.Red); root.style.setProperty('--success-color', themeData.Green); root.style.setProperty('--warning-color', themeData.Yellow); if (term) { term.setOption('theme', { background: themeData.Background, foreground: themeData.Foreground, cursor: themeData.Cursor, selectionBackground: themeData.Cursor + '40', black: themeData.Black, red: themeData.Red, green: themeData.Green, yellow: themeData.Yellow, blue: themeData.Blue, magenta: themeData.Magenta, cyan: themeData.Cyan, white: themeData.White, brightBlack: themeData.BrightBlack, brightRed: themeData.BrightRed, brightGreen: themeData.BrightGreen, brightYellow: themeData.BrightYellow, brightBlue: themeData.BrightBlue, brightMagenta: themeData.BrightMagenta, brightCyan: themeData.BrightCyan, brightWhite: themeData.BrightWhite }); } }
+function applyTheme(themeData) { if (!themeData) return; const root = document.documentElement; const bgLuminance = parseInt(themeData.Background.substring(1, 3), 16) + parseInt(themeData.Background.substring(3, 5), 16) + parseInt(themeData.Background.substring(5, 7), 16); const isDark = bgLuminance < 384; const step = isDark ? 15 : -15; root.style.setProperty('--bg-primary', themeData.Background); root.style.setProperty('--bg-secondary', adjustColor(themeData.Background, step)); root.style.setProperty('--bg-tertiary', adjustColor(themeData.Background, step * 2)); root.style.setProperty('--border-color', adjustColor(themeData.Background, step * 3)); root.style.setProperty('--text-primary', themeData.Foreground); root.style.setProperty('--text-secondary', adjustColor(themeData.Foreground, isDark ? -80 : 80)); root.style.setProperty('--accent-color', themeData.Blue); root.style.setProperty('--accent-hover', adjustColor(themeData.Blue, isDark ? 30 : -30)); root.style.setProperty('--danger-color', themeData.Red); root.style.setProperty('--success-color', themeData.Green); root.style.setProperty('--warning-color', themeData.Yellow); if (term) { term.options.theme = { background: themeData.Background, foreground: themeData.Foreground, cursor: themeData.Cursor, selectionBackground: themeData.Cursor + '40', black: themeData.Black, red: themeData.Red, green: themeData.Green, yellow: themeData.Yellow, blue: themeData.Blue, magenta: themeData.Magenta, cyan: themeData.Cyan, white: themeData.White, brightBlack: themeData.BrightBlack, brightRed: themeData.BrightRed, brightGreen: themeData.BrightGreen, brightYellow: themeData.BrightYellow, brightBlue: themeData.BrightBlue, brightMagenta: themeData.BrightMagenta, brightCyan: themeData.BrightCyan, brightWhite: themeData.BrightWhite }; } }
 function handleThemePresetChange() { const sel = document.getElementById('theme-preset-select'); const customArea = document.getElementById('custom-theme-area'); const name = sel.value; if (name === "Custom") { customArea.style.display = 'flex'; handleCustomThemeChange(); } else { customArea.style.display = 'none'; applyTheme(themePresets[name]); saveConfigSilently(); } }
 function handleCustomThemeChange() { applyTheme({ Name: "Custom", Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] }); saveConfigSilently(); }
 function listScripts() { fetch('/listscripts', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') { const select = document.getElementById('script-select'); select.innerHTML = '<option value="">-- Select Script --</option>'; data.scripts.forEach(s => { const opt = document.createElement('option'); opt.value = s; opt.textContent = s; select.appendChild(opt); }); } }); }
 function runScript() { const filename = document.getElementById('script-select').value; if (!filename) return alert("Please select a script first."); isScriptRunning = true; document.getElementById('script-status-text').textContent = 'Running...'; document.getElementById('script-status-text').style.color = 'var(--success-color)'; document.getElementById('script-console').innerHTML = ''; const formData = new FormData(); formData.append('filename', filename); fetch('/runscript', { method: 'POST', body: formData }).then(r => r.json()).then(data => { if (data.status !== 'ok') { appendToScriptConsole("❌ Failed to start: " + data.message); isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Error'; document.getElementById('script-status-text').style.color = 'var(--danger-color)'; } else { appendToScriptConsole(`🚀 Executing: ${filename}`); } }); }
-function stopScript() { fetch('/stopscript', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') { isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Stopped'; document.getElementById('script-status-text').style.color = 'var(--warning-color)'; document.getElementById('script-console').innerHTML = ''; } }); }
+function stopScript() { fetch('/stopscript', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') { isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Stopped'; document.getElementById('script-status-text').style.color = 'var(--warning-color)'; /* Delay clear: backend still broadcasts trailing stop/finished messages via WS; clearing immediately re-renders them as leftover output. */ setTimeout(() => { document.getElementById('script-console').innerHTML = ''; }, 800); } }); }
 function appendToScriptConsole(msg) { const con = document.getElementById('script-console'); const div = document.createElement('div'); div.textContent = msg; con.appendChild(div); con.scrollTop = con.scrollHeight; if (msg.includes("finished") || msg.includes("stopped") || msg.includes("Error")) { isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Idle'; document.getElementById('script-status-text').style.color = 'var(--text-secondary)'; } }
 function toggleConnection() { isConnected ? disconnect() : connect(); }
 function connect() { fetch('/connect', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'connected') { isConnected = true; updateConnectionStatus(true); } else { alert('Connection failed: ' + data.message); } }); }
@@ -619,7 +692,7 @@ function disconnect() { fetch('/disconnect', { method: 'POST' }).then(r => r.jso
 function scanPorts() { const modalBody = document.getElementById('modal-body'); modalBody.innerHTML = `<h3>Scanning...</h3>`; document.getElementById('modal').style.display = 'block'; fetch('/scan', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') showPortSelection(data.ports); else showPortSelectionError(data.message); }).catch(error => showPortSelectionError(error.message)); }
 function setMode(mode) { if (shellEnabled) return; const formData = new FormData(); formData.append('mode', mode); fetch('/setmode', { method: 'POST', body: formData }).then(r => r.json()).then(data => { if (data.status === 'ok') { currentMode = mode; updateMode(mode); } }); }
 function setTimestamp(enabled) { timestampEnabled = enabled; updateTimestampStatus(enabled); saveConfigSilently(); }
-function setShellEnabled(enabled, shouldSave = true) { if (shellEnabled === enabled && !(enabled && !term)) return; userActionLock = true; shellEnabled = enabled; updateShellStatus(enabled); syncShellUI(enabled); if (enabled) { if (!xtermLoaded) { syncShellUI(false); addToOutput('[System] Shell mode requires xterm.js.'); shellEnabled = false; updateShellStatus(false); userActionLock = false; return; } if (!term) { try { initTerminal(); } catch (e) { syncShellUI(false); shellEnabled = false; updateShellStatus(false); addToOutput('[System] Failed to initialize terminal: ' + e.message); userActionLock = false; return; } } else { setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } if (outputMessages.length > 0) { const plainText = outputMessages.map(msg => { const div = document.createElement('div'); div.innerHTML = msg; return div.textContent || div.innerText || ''; }).join('\r\n'); if (plainText.trim()) { term.write('\r\n\x1b[33m--- Previous output transferred ---\x1b[0m\r\n'); term.write(plainText); term.write('\r\n\x1b[33m--- End of transferred output ---\x1b[0m\r\n'); } outputMessages = []; pendingMessages = []; document.getElementById('output').innerHTML = ''; outputTrimOffset = 0; } } else { if (term) { const buffer = term.buffer.active; let shellOutput = ''; for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) shellOutput += line.translateToString(true) + "\n"; } shellOutput = shellOutput.trimEnd().replace(/\x1b\[[0-9;]*m/g, ''); if (shellOutput) { addToOutput('<span style="color: #cca700;">--- Shell output transferred ---</span>'); shellOutput.split('\n').forEach(line => { if (line) addToOutput(line); }); addToOutput('<span style="color: #cca700;">--- End of transferred output ---</span>'); } term.dispose(); term = null; fitAddon = null; if (timeGutter) { timeGutter.reset(); timeGutter = null; } } } if (shouldSave) saveConfigSilently(); setTimeout(() => { userActionLock = false; }, 3000); }
+function setShellEnabled(enabled, shouldSave = true) { if (shellEnabled === enabled && !(enabled && !term)) return; userActionLock = true; shellEnabled = enabled; updateShellStatus(enabled); syncShellUI(enabled); if (enabled) { if (!xtermLoaded) { syncShellUI(false); addToOutput('[System] Shell mode requires xterm.js.'); shellEnabled = false; updateShellStatus(false); userActionLock = false; return; } if (!term) { try { initTerminal(); } catch (e) { syncShellUI(false); shellEnabled = false; updateShellStatus(false); addToOutput('[System] Failed to initialize terminal: ' + e.message); userActionLock = false; return; } } else { setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } /* no content transfer from traditional mode: the session log file has everything */ addToOutput('[System] Switched to Shell mode. Previous output is in the session log file.'); } else { /* no buffer sweep out of xterm: the session log file has everything */ if (term) { term.dispose(); term = null; fitAddon = null; if (timeGutter) { timeGutter.reset(); timeGutter = null; } } outputMessages = []; pendingMessages = []; document.getElementById('output').innerHTML = ''; outputTrimOffset = 0; vsWindowFirst = -1; vsNeedsInit = true; vsAutoScroll = true; } if (shouldSave) saveConfigSilently(); setTimeout(() => { userActionLock = false; }, 3000); }
 function initTerminal() { const currentThemeName = document.getElementById('theme-preset-select').value; const currentTheme = currentThemeName === "Custom" ? { Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] } : themePresets[currentThemeName]; term = new Terminal({ cursorBlink: true, theme: { background: currentTheme.Background, foreground: currentTheme.Foreground, cursor: currentTheme.Cursor, black: currentTheme.Black, red: currentTheme.Red, green: currentTheme.Green, yellow: currentTheme.Yellow, blue: currentTheme.Blue, magenta: currentTheme.Magenta, cyan: currentTheme.Cyan, white: currentTheme.White, brightBlack: currentTheme.BrightBlack, brightRed: currentTheme.BrightRed, brightGreen: currentTheme.BrightGreen, brightYellow: currentTheme.BrightYellow, brightBlue: currentTheme.BrightBlue, brightMagenta: currentTheme.BrightMagenta, brightCyan: currentTheme.BrightCyan, brightWhite: currentTheme.BrightWhite }, fontSize: parseInt(document.getElementById('fontsize-input').value) || 14, fontFamily: getFullFontStack(document.getElementById('font-input').value), scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000, convertEol: false }); fitAddon = new FitAddon.FitAddon(); term.loadAddon(fitAddon); term.open(termContainer); timeGutter = new TimeGutter(timeGutterEl); timeGutter.bindTerminal(term); updateGutterVisibility(); term.onSelectionChange(() => { if (term.hasSelection()) navigator.clipboard.writeText(term.getSelection()).catch(err => {}); }); term.onData(data => { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data: data })); }); new ResizeObserver(() => { if (term && fitAddon && shellEnabled && termContainer.offsetWidth > 0) { try { fitAddon.fit(); } catch(e) {} } }).observe(termContainer); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); if (document.activeElement === document.body || document.activeElement === null || document.activeElement.tagName === 'DIV') term.focus(); }, 200); }
 
 // ================== PROCESSING PIPELINE ==================
@@ -627,8 +700,9 @@ function escapeHtml(text) { return text.replace(/[&<>"]/g, function(tag) { const
 function ansiToHtml(text) { const ansiRegex = /\x1b\[([0-9;]*)m/g; let match; let lastIndex = 0; let html = ''; const openTags = []; const colors = [ '#000000', '#cd3131', '#0dbc79', '#e5e510', '#2472c8', '#bc3fbc', '#11a8cd', '#e5e5e5', '#666666', '#f14c4c', '#23d18b', '#f5f543', '#3b8eea', '#d670d6', '#29b8db', '#ffffff' ]; while ((match = ansiRegex.exec(text)) !== null) { html += text.substring(lastIndex, match.index); lastIndex = match.index + match[0].length; const codes = match[1].split(';').map(Number).filter(n => !isNaN(n)); if (codes.length === 0) { while(openTags.length) { html += '</span>'; openTags.pop(); } continue; } let style = ''; for(let i = 0; i < codes.length; i++) { const code = codes[i]; if (code === 0) { style = ''; while(openTags.length) { html += '</span>'; openTags.pop(); } } else if (code === 1) { style += 'font-weight:bold;'; } else if (code >= 30 && code <= 37) { style += `color:${colors[code-30]};`; } else if (code >= 90 && code <= 97) { style += `color:${colors[code-90+8]};`; } else if (code === 38) { if (codes[i+1] === 5) { const c = codes[i+2]; if (c < 16) style += `color:${colors[c]};`; i += 2; } else if (codes[i+1] === 2) { style += `color:rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]});`; i += 4; } } } if (style) { html += `<span style="${style}">`; openTags.push(true); } } html += text.substring(lastIndex); while(openTags.length) { html += '</span>'; openTags.pop(); } return html; }
 function applyHighlightRaw(text) {
     if (!combinedHighlightRegex) return text;
-    const regex = new RegExp(combinedHighlightRegex.source, combinedHighlightRegex.flags);
-    return text.replace(regex, function(match, ...groups) {
+    // String.replace with a /g/ regex resets lastIndex itself — no need to
+    // clone the regex per line (that was a per-line compile cost).
+    return text.replace(combinedHighlightRegex, function(match, ...groups) {
         for (let i = 0; i < highlightColorMap.length; i++) {
             if (groups[i] !== undefined) {
                 return `\x00HL${highlightColorMap[i]}\x00${match}\x00HLEND\x00`;
@@ -648,6 +722,13 @@ function applyShellHighlight(text) { if (!combinedHighlightRegex) return text; r
  *        This order ensures highlight patterns containing HTML-special
  *        characters (e.g. >>>, <<<) are matched before escaping.
  */
+function cleanTraditionalLine(text) {
+    // Traditional mode shows plain text: strip ANSI CSI/OSC sequences and
+    // control characters (BEL/BS/other C0) so they never appear as glyphs.
+    return text.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+               .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')
+               .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
 function processLogLine(text) {
     let line = applyHighlightRaw(text);
     line = ansiToHtml(escapeHtml(line));
@@ -661,9 +742,14 @@ function addToHistory(command) { if (!command || command.trim() === '' || shellE
 function navigateHistory(direction) { if (historyList.length === 0 || shellEnabled) return; historyIndex = Math.max(0, Math.min(historyList.length - 1, historyIndex + direction)); document.getElementById('input').value = historyList[historyIndex]; }
 function sendData() { if (shellEnabled) return; const input = document.getElementById('input'); let data = input.value; if (data === '') return; const suffixSelect = document.getElementById('suffix-select'); if (suffixSelect) { const suffixVal = suffixSelect.value; if (suffixVal === '\\n') { data += '\n'; } else if (suffixVal === '\\r\\n') { data += '\r\n'; } } const formData = new FormData(); formData.append('data', data); fetch('/send', { method: 'POST', body: formData }).then(r => r.json()).then(res => { if (res.status === 'ok') { addToHistory(input.value); input.value = ''; historyIndex = historyList.length; } else { alert('Send failed: ' + res.message); } }); }
 function handleInputKeydown(event) { if (event.key === 'Tab') { if (!shellEnabled) { event.preventDefault(); const formData = new FormData(); formData.append('data', '\t'); fetch('/send', { method: 'POST', body: formData }); } return; } if (shellEnabled) return; if (event.key === 'Enter') { event.preventDefault(); sendData(); } else if (event.key === 'ArrowUp') { event.preventDefault(); navigateHistory(-1); } else if (event.key === 'ArrowDown') { event.preventDefault(); navigateHistory(1); } }
-function exportLog() { let content = ""; if (shellEnabled && term) { const buffer = term.buffer.active; const hasTimestamps = timestampEnabled && timeGutter; const tsMap = {}; if (hasTimestamps) { if (timeGutter.markers && timeGutter.markers.length > 0) { timeGutter.markers.forEach(m => { if (!m.marker.isDisposed) { tsMap[m.marker.line] = m.ts; } }); } else if (timeGutter.lineTimestamps) { timeGutter.lineTimestamps.forEach((ts, index) => { if (ts) tsMap[index] = ts; }); } } let mergedLines = []; for (let i = 0; i < buffer.length; i++) { const line = buffer.getLine(i); if (line) { let lineText = line.translateToString(true); if (line.isWrapped && mergedLines.length > 0) { mergedLines[mergedLines.length - 1].text += lineText; } else { let ts = hasTimestamps ? (tsMap[i] || '') : ''; mergedLines.push({ text: lineText, ts: ts }); } } } mergedLines.forEach(item => { if (item.ts) { content += `[${item.ts}] ${item.text}\n`; } else { content += `${item.text}\n`; } }); content = content.trimEnd(); } else { outputMessages.forEach(msg => { content += msg + "\n"; }); } if (!content.trim()) return alert("No data to export."); const defaultName = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.log`; showExportDialog(content, defaultName); }
-function rerenderAllOutput() { const output = document.getElementById('output'); output.innerHTML = ''; outputMessages.forEach(msg => { const div = document.createElement('div'); div.innerHTML = processLogLine(msg); output.appendChild(div); }); }
-function clearOutput(sendClear = true) { if (sendClear) fetch('/clear', { method: 'POST' }); if (shellEnabled && term) { term.clear(); if (timeGutter) timeGutter.reset(); } else { const output = document.getElementById('output'); output.style.contentVisibility = 'hidden'; output.innerHTML = ''; output.style.contentVisibility = ''; pendingMessages = []; outputMessages = []; outputTrimOffset = 0; } _lastGlobalLineNumWidth = 0; filterOutput.innerHTML = ''; }
+function exportLog() {
+    // Zero main-thread cost: the backend streams/copies the session log file.
+    // We go straight to the path-input dialog so the backend gets a full path.
+    const defaultName = `serial_log_${new Date().toISOString().replace(/[:.]/g, '-')}.log`;
+    showExportDialogFallback(null, defaultName);
+}
+function rerenderAllOutput() { vsWindowFirst = -1; vsScheduleRender(); }
+function clearOutput(sendClear = true) { if (sendClear) fetch('/clear', { method: 'POST' }); if (shellEnabled && term) { /* reset() is O(1); clear() is O(scrollback) — 5s at 100k lines */ term.reset(); if (timeGutter) timeGutter.reset(); } else { pendingMessages = []; outputMessages = []; outputTrimOffset = 0; vsWindowFirst = -1; vsNeedsInit = true; vsAutoScroll = true; vsScheduleRender(); } _lastGlobalLineNumWidth = 0; filterOutput.innerHTML = ''; }
 function updateConnectionStatus(connected) { isConnected = connected; const status = document.getElementById('connection-status'); status.textContent = connected ? 'Connected' : 'Disconnected'; status.className = connected ? 'connected' : ''; }
 function updateMode(mode) { currentMode = mode; document.getElementById('ascii-mode').checked = (mode === 'ascii'); document.getElementById('hex-mode').checked = (mode === 'hex'); }
 function updateTimestampStatus(enabled) { timestampEnabled = enabled; document.getElementById('timestamp-on').checked = enabled; document.getElementById('timestamp-off').checked = !enabled; updateGutterVisibility(); }
@@ -673,20 +759,10 @@ function showPortSelectionError(msg) { document.getElementById('modal-body').inn
 function closeModal() { document.getElementById('modal').style.display = 'none'; }
 
 async function showExportDialog(content, defaultName) {
-    try {
-        const handle = await window.showSaveFilePicker({
-            suggestedName: defaultName,
-            types: [{ description: 'Log Files', accept: { 'text/plain': ['.log', '.txt'] } }]
-        });
-        const writable = await handle.createWritable();
-        await writable.write(content);
-        await writable.close();
-        const dir = handle.name ? '' : '';
-        localStorage.setItem('exportLogDir', '');
-    } catch (err) {
-        if (err.name === 'AbortError') return;
-        showExportDialogFallback(content, defaultName);
-    }
+    // content === null means: export the backend session log file (zero-copy).
+    // Native file picker only gives us a filename (no full path), so backend
+    // session export always uses the path-input dialog instead.
+    showExportDialogFallback(content, defaultName);
 }
 
 function showExportDialogFallback(content, defaultName) {
@@ -721,6 +797,15 @@ function doExportLog(content) {
     const dir = path.replace(/[\\/][^\\/]*$/, '') || '.';
     localStorage.setItem('exportLogDir', dir);
     msgEl.innerHTML = '<span style="color:var(--warning-color);">Saving...</span>';
+    if (content === null) {
+        // Backend copies the session log file directly — zero main-thread cost.
+        fetch('/exportsession', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ path: path }) })
+            .then(r => r.json()).then(data => {
+                if (data.status === 'ok') { msgEl.innerHTML = `<span style="color:var(--success-color);">Saved to: ${escapeHtml(data.path)}</span>`; setTimeout(closeModal, 1500); }
+                else { msgEl.innerHTML = `<span style="color:var(--danger-color);">Error: ${escapeHtml(data.message)}</span>`; }
+            }).catch(err => { msgEl.innerHTML = `<span style="color:var(--danger-color);">Error: ${escapeHtml(err.message)}</span>`; });
+        return;
+    }
     fetch('/exportlog', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({path: path, content: content}) })
         .then(r => r.json()).then(data => {
             if (data.status === 'ok') { msgEl.innerHTML = `<span style="color:var(--success-color);">Saved to: ${escapeHtml(data.path)}</span>`; setTimeout(closeModal, 1500); }
