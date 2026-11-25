@@ -358,6 +358,48 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
 }
 
 /* Input Area Specifics */
+/* ---- Quick Commands chip bar ---- */
+.qc-bar { flex-shrink: 0; display: flex; align-items: center; gap: 4px; padding: 4px 8px; min-height: 28px; background-color: var(--bg-secondary); border-bottom: 1px solid var(--border-color); overflow-x: auto; overflow-y: hidden; }
+.qc-chips { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
+.qc-chip { flex-shrink: 0; height: 22px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 11px; background-color: transparent; color: var(--text-secondary); font-size: 11px; font-family: monospace; cursor: pointer; white-space: nowrap; position: relative; }
+.qc-chip:hover { border-color: var(--accent-color, #4a9eff); color: var(--text-primary); }
+.qc-chip.flash { background-color: var(--success-color, #2ea043); color: #fff; border-color: var(--success-color, #2ea043); }
+.qc-chip .qc-suffix-mark { position: absolute; right: 3px; bottom: 0; font-size: 8px; line-height: 8px; opacity: 0.7; }
+.qc-chip .qc-key-badge { margin-right: 4px; color: var(--text-secondary); opacity: 0.6; font-size: 9px; }
+.qc-manage-btn { flex-shrink: 0; height: 22px; width: 26px; padding: 0; border: 1px solid var(--border-color); border-radius: 11px; background-color: transparent; color: var(--text-secondary); font-size: 12px; cursor: pointer; line-height: 1; }
+.qc-manage-btn:hover { color: var(--text-primary); border-color: var(--accent-color, #4a9eff); }
+.qc-empty-hint { color: var(--text-secondary); opacity: 0.55; font-size: 10px; padding: 0 4px; white-space: nowrap; }
+/* Quick-command editor form (inside existing modal) */
+.qc-form { display: flex; flex-direction: column; gap: 10px; }
+.qc-form label { font-size: 11px; color: var(--text-secondary); margin-bottom: 2px; display: block; }
+.qc-form input, .qc-form select { background-color: var(--bg-primary); border: 1px solid var(--border-color); color: var(--text-primary); padding: 4px; border-radius: 2px; font-family: monospace; font-size: 12px; width: 100%; box-sizing: border-box; }
+.qc-form .qc-form-actions { display: flex; gap: 8px; margin-top: 6px; }
+/* Chip context menu */
+.qc-menu { position: fixed; z-index: 2000; background-color: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 4px; padding: 4px 0; min-width: 120px; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+.qc-menu-item { display: block; width: 100%; padding: 5px 14px; border: none; background: transparent; color: var(--text-primary); font-size: 12px; text-align: left; cursor: pointer; }
+.qc-menu-item:hover { background-color: var(--bg-tertiary, #2a2d2e); }
+.qc-menu-item.qc-menu-danger { color: var(--danger-color, #e81123); }
+
+/* Quick-command manage panel (inside shared modal) */
+.qc-m-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; font-size: 12px; }
+.qc-m-selall { display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.qc-m-count { color: var(--text-secondary); }
+.qc-m-danger-btn { background-color: transparent; border: 1px solid var(--danger-color); color: var(--danger-color); border-radius: 3px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.qc-m-danger-btn:hover { background-color: var(--danger-color); color: white; }
+.qc-m-table-wrap { max-height: 400px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: 2px; }
+.qc-m-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.qc-m-table th { text-align: left; color: var(--text-secondary); font-weight: normal; padding: 5px 8px; border-bottom: 1px solid var(--border-color); position: sticky; top: 0; background-color: var(--bg-secondary); }
+.qc-m-table td { padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
+.qc-m-check { width: 26px; text-align: center; }
+.qc-m-name { width: 30%; max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.qc-m-data { max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: monospace; color: var(--text-secondary); }
+.qc-m-ops { width: 100px; text-align: right; white-space: nowrap; }
+.qc-m-op { background: transparent; border: none; color: var(--text-secondary); cursor: pointer; font-size: 12px; padding: 2px 4px; border-radius: 2px; }
+.qc-m-op:hover { color: var(--text-primary); background-color: var(--bg-tertiary); }
+.qc-m-op-danger:hover { color: var(--danger-color); }
+tr:hover .qc-m-op { color: var(--text-primary); }
+tr:nth-child(even) { background-color: rgba(255,255,255,0.015); }
+
 .input-area {
     background-color: var(--bg-secondary);
     border-top: 1px solid var(--border-color);
@@ -395,6 +437,7 @@ textarea { width: 100%; resize: vertical; font-family: monospace; }
 
 /* Modal */
 .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background-color: rgba(0,0,0,0.6); }
-.modal-content { background-color: var(--bg-secondary); margin: 10% auto; padding: 20px; width: 400px; border-radius: 4px; }
+.modal-content { background-color: var(--bg-secondary); margin: 5% auto; padding: 20px; width: 400px; max-width: 92vw; max-height: 85vh; overflow-y: auto; border-radius: 4px; }
+.modal-content.wide { width: 560px; }
 .close { color: var(--text-secondary); float: right; font-size: 20px; cursor: pointer; }
 

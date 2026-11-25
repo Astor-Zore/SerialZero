@@ -100,6 +100,12 @@ ok:#00ff00</textarea>
 
         <!-- Terminal View -->
         <div id="terminal-wrapper" class="terminal-wrapper">
+            <!-- Quick Commands chip bar (visible in BOTH shell and traditional modes) -->
+            <div id="qc-bar" class="qc-bar">
+                <div id="qc-chips" class="qc-chips"></div>
+                <button id="qc-add-btn" class="qc-manage-btn" title="New quick command">＋</button>
+                <button id="qc-manage-btn" class="qc-manage-btn" title="Manage quick commands">⚙</button>
+            </div>
             <div id="output-container" class="output-container">
                 <div id="output" class="output"></div>
             </div>
@@ -160,7 +166,7 @@ ok:#00ff00</textarea>
     </div>
 
     <div id="modal" class="modal">
-        <div class="modal-content">
+        <div id="modal-content" class="modal-content">
             <span class="close">&times;</span>
             <div id="modal-body"></div>
         </div>

@@ -2,6 +2,8 @@
 let ws;
 let historyList = [];
 let historyIndex = 0;
+let quickCommands = [];   // [{name, data, suffix}]
+let qcLastForm = { name: '', data: '', suffix: '' }; // prefill memory
 let isConnected = false;
 let currentMode = 'ascii';
 let shellEnabled = false;
@@ -81,6 +83,19 @@ document.addEventListener('DOMContentLoaded', function() {
     setupHighlightTools();
     setupTitlebar();
     setupResizeHandles();
+    const qcAdd = document.getElementById('qc-add-btn');
+    if (qcAdd) qcAdd.addEventListener('click', () => qcEdit(-1));
+    const qcManageBtn = document.getElementById('qc-manage-btn');
+    if (qcManageBtn) qcManageBtn.addEventListener('click', qcManage);
+    document.addEventListener('keydown', (e) => {
+        // Ctrl+1..9: fire quick commands. Not when typing in an input (except
+        // the terminal input where digits belong to the command being typed).
+        if (e.ctrlKey && !e.altKey && !e.shiftKey && e.key >= '1' && e.key <= '9') {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+            const idx = parseInt(e.key) - 1;
+            if (idx < quickCommands.length) { e.preventDefault(); qcSend(idx); }
+        }
+    });
 });
 
 // ================= HIGHLIGHT TOOLS LOGIC =================
@@ -669,11 +684,202 @@ function flushOutput() { updateTimer = null; if (pendingMessages.length === 0) r
 function applyFontSettings(font, size) { const output = document.getElementById('output'); const fullFont = getFullFontStack(font); output.style.fontFamily = fullFont; output.style.fontSize = size + 'px'; document.documentElement.style.setProperty('--log-font-size', `${size}px`); document.documentElement.style.setProperty('--gutter-font-size', `${Math.max(10, size - 1)}px`); const highlightInput = document.getElementById('highlight-input'); if(highlightInput) { highlightInput.style.fontFamily = fullFont; highlightInput.style.fontSize = `${size}px`; } const mainFilterOutput = document.getElementById('filter-output'); if(mainFilterOutput) { mainFilterOutput.style.fontFamily = fullFont; mainFilterOutput.style.fontSize = size + 'px'; } Object.keys(logTabs).forEach(tabId => { const logOutput = document.getElementById(`${tabId}_output`); const logFilterOutput = document.getElementById(`${tabId}_filter_output`); if(logOutput) { logOutput.style.fontFamily = fullFont; logOutput.style.fontSize = `var(--log-font-size)`; } if(logFilterOutput) { logFilterOutput.style.fontFamily = fullFont; logFilterOutput.style.fontSize = size + 'px'; } }); if (term) { term.options.fontFamily = fullFont; term.options.fontSize = parseInt(size); setTimeout(() => { if(term && fitAddon) fitAddon.fit(); }, 50); } if (timeGutter) timeGutter.syncFont(); }
 function updatePortInfo(port, baud) { document.getElementById('port-info').textContent = `${port} | ${baud}`; }
 function loadConfig() { fetch('/getconfig', { method: 'POST' }).then(r => r.json()).then(data => { updateConfig(data.config, true); updateConnectionStatus(data.connected); updateMode(data.mode); const configShell = (data.config && data.config.UI) ? data.config.UI.Shell : true; setShellEnabled(configShell, false); requestAnimationFrame(() => { requestAnimationFrame(() => { fetch('/ready', { method: 'POST' }); }); }); }).catch(err => { console.error('Config load failed:', err); shellEnabled = false; syncShellUI(false); fetch('/ready', { method: 'POST' }); }); }
-function updateConfig(config, isInitial = false) { if (!config) return; if (config.Serial) { document.getElementById('port-input').value = config.Serial.Port || 'COM1'; document.getElementById('baud-input').value = config.Serial.Baud || 9600; document.getElementById('databits-select').value = config.Serial.Databits || 8; document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1; document.getElementById('parity-select').value = config.Serial.Parity || 'N'; updatePortInfo(config.Serial.Port, config.Serial.Baud); } if (config.UI) { document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace'; document.getElementById('fontsize-input').value = config.UI.FontSize || 14; document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000; applyFontSettings(config.UI.Font, config.UI.FontSize); updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true); if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true); } if (config.Highlight && config.Highlight.Groups) { const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : ["error:#ff0000", "warn:#ffa500"]; document.getElementById('highlight-input').value = groups.join('\n'); updateHighlightRules(groups); renderHighlightPreviewStrip(); } if (config.Theme) { const name = config.Theme.Name || "Default"; document.getElementById('theme-preset-select').value = name; if (name === "Custom") { document.getElementById('custom-theme-area').style.display = 'flex'; document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e'; document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc'; document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff'; applyTheme(config.Theme); } else { document.getElementById('custom-theme-area').style.display = 'none'; applyTheme(themePresets[name]); } } }
+function updateConfig(config, isInitial = false) { if (!config) return; if (config.Serial) { document.getElementById('port-input').value = config.Serial.Port || 'COM1'; document.getElementById('baud-input').value = config.Serial.Baud || 9600; document.getElementById('databits-select').value = config.Serial.Databits || 8; document.getElementById('stopbits-select').value = config.Serial.Stopbits || 1; document.getElementById('parity-select').value = config.Serial.Parity || 'N'; updatePortInfo(config.Serial.Port, config.Serial.Baud); } if (config.UI) { document.getElementById('font-input').value = config.UI.Font || 'Consolas, monospace'; document.getElementById('fontsize-input').value = config.UI.FontSize || 14; document.getElementById('scrollback-input').value = config.UI.Scrollback || 100000; applyFontSettings(config.UI.Font, config.UI.FontSize); updateTimestampStatus(config.UI.Timestamp !== undefined ? config.UI.Timestamp : true); if (!isInitial && !userActionLock) updateShellStatus(config.UI.Shell !== undefined ? config.UI.Shell : true); } if (config.Highlight && config.Highlight.Groups) { const groups = Array.isArray(config.Highlight.Groups) ? config.Highlight.Groups : ["error:#ff0000", "warn:#ffa500"]; document.getElementById('highlight-input').value = groups.join('\n'); updateHighlightRules(groups); renderHighlightPreviewStrip(); } if (config.Theme) { const name = config.Theme.Name || "Default"; document.getElementById('theme-preset-select').value = name; if (name === "Custom") { document.getElementById('custom-theme-area').style.display = 'flex'; document.getElementById('theme-bg').value = config.Theme.Background || '#1e1e1e'; document.getElementById('theme-fg').value = config.Theme.Foreground || '#cccccc'; document.getElementById('theme-cursor').value = config.Theme.Cursor || '#ffffff'; applyTheme(config.Theme); } else { document.getElementById('custom-theme-area').style.display = 'none'; applyTheme(themePresets[name]); } }  qcLoad(config);}
 function addConfigChangeListeners() { ['port-input', 'baud-input', 'databits-select', 'stopbits-select', 'parity-select', 'font-input', 'fontsize-input', 'highlight-input', 'scrollback-input'].forEach(id => { document.getElementById(id).addEventListener('change', saveConfigSilently); }); document.getElementById('port-input').addEventListener('input', function() { updatePortInfo(this.value, document.getElementById('baud-input').value); }); document.getElementById('port-input').addEventListener('change', function() { updatePortInfo(this.value, document.getElementById('baud-input').value); }); document.getElementById('baud-input').addEventListener('change', function() { updatePortInfo(document.getElementById('port-input').value, this.value); }); document.getElementById('font-input').addEventListener('change', function() { applyFontSettings(this.value, document.getElementById('fontsize-input').value); }); document.getElementById('fontsize-input').addEventListener('change', function() { applyFontSettings(document.getElementById('font-input').value, this.value); }); document.getElementById('scrollback-input').addEventListener('change', function() { if (shellEnabled && term) { setShellEnabled(false, false); setTimeout(() => setShellEnabled(true, false), 100); } }); document.getElementById('highlight-input').addEventListener('change', function() { updateHighlightRules(this.value.split('\n').map(l => l.trim()).filter(l => l)); if(isFilterEnabled) runFullFilter(); }); }
-function saveConfig() { fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }).then(r => r.json()).then(data => { if (data.status === 'ok') alert('Configuration saved'); else alert('Save failed: ' + data.message); }); }
-function saveConfigSilently() { fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }); }
-function getFormData() { const themeName = document.getElementById('theme-preset-select').value; let themeData = { Name: themeName }; if (themeName === "Custom") { themeData.Background = document.getElementById('theme-bg').value; themeData.Foreground = document.getElementById('theme-fg').value; themeData.Cursor = document.getElementById('theme-cursor').value; Object.assign(themeData, themePresets["Default"]); } else { const preset = themePresets[themeName]; if(preset) Object.assign(themeData, preset); } return { Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value }, UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled, Scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000 }, Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) }, Log: { Path: './logs' }, Theme: themeData }; }
+function saveConfig() { fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }).then(r => r.json()).then(data => { if (data.status !== 'ok') addToOutput('[System] Config save failed: ' + data.message); else addToOutput('[System] Configuration saved.'); }); }
+function saveConfigSilently() { fetch('/saveconfig', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(getFormData()) }).catch(err => addToOutput('[System] Config save failed: ' + err.message)); }
+function getFormData() { const themeName = document.getElementById('theme-preset-select').value; let themeData = { Name: themeName }; if (themeName === "Custom") { themeData.Background = document.getElementById('theme-bg').value; themeData.Foreground = document.getElementById('theme-fg').value; themeData.Cursor = document.getElementById('theme-cursor').value; Object.assign(themeData, themePresets["Default"]); } else { const preset = themePresets[themeName]; if(preset) Object.assign(themeData, preset); } return { Serial: { Port: document.getElementById('port-input').value, Baud: parseInt(document.getElementById('baud-input').value), Databits: parseInt(document.getElementById('databits-select').value), Stopbits: parseInt(document.getElementById('stopbits-select').value), Parity: document.getElementById('parity-select').value }, UI: { Font: document.getElementById('font-input').value, FontSize: parseInt(document.getElementById('fontsize-input').value), Timestamp: timestampEnabled, Shell: shellEnabled, Scrollback: parseInt(document.getElementById('scrollback-input').value) || 100000 }, Highlight: { Groups: document.getElementById('highlight-input').value.split('\n').map(l=>l.trim()).filter(l=>l) }, Log: { Path: './logs' }, Theme: themeData, QuickCommands: quickCommands }; }
+
+// ================= QUICK COMMANDS =================
+function qcRender() {
+    const chipsEl = document.getElementById('qc-chips');
+    if (!chipsEl) return;
+    chipsEl.innerHTML = '';
+    if (!quickCommands.length) {
+        const hint = document.createElement('span');
+        hint.className = 'qc-empty-hint';
+        hint.textContent = 'No quick commands — click ＋ to create one (Ctrl+1..9 to fire)';
+        chipsEl.appendChild(hint);
+        return;
+    }
+    quickCommands.forEach((qc, i) => {
+        const chip = document.createElement('button');
+        chip.className = 'qc-chip';
+        chip.title = qc.data + (qc.suffix === '\n' ? ' (+LF)' : qc.suffix === '\r\n' ? ' (+CRLF)' : '');
+        chip.innerHTML = (i < 9 ? `<span class="qc-key-badge">${i+1}</span>` : '') + qc.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + (qc.suffix ? '<span class="qc-suffix-mark">⏎</span>' : '');
+        chip.addEventListener('click', () => qcSend(i));
+        chip.addEventListener('contextmenu', (e) => { e.preventDefault(); qcMenu(e, i); });
+        chipsEl.appendChild(chip);
+    });
+}
+
+// Dual-mode send: shell -> WebSocket input channel (same as typing in xterm);
+// traditional -> POST /send (same as the input box).
+function qcSend(i) {
+    const qc = quickCommands[i];
+    if (!qc) return;
+    if (shellEnabled) {
+        const payload = qc.data + '\r';   // shell: Enter == CR
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data: payload }));
+        else { addToOutput('[System] Not connected — cannot send quick command.'); return; }
+    } else {
+        const fd = new FormData();
+        let data = qc.data;
+        // suffix is stored as a real control char ("\n" = LF, "\r\n" = CRLF)
+        if (qc.suffix === '\n') data += '\n';
+        else if (qc.suffix === '\r\n') data += '\r\n';
+        fd.append('data', data);
+        fetch('/send', { method: 'POST', body: fd }).then(r => r.json()).then(res => {
+            if (res.status !== 'ok') { addToOutput('[System] Quick command failed: ' + res.message); return; }
+        });
+    }
+    // flash feedback on the chip
+    const chips = document.querySelectorAll('#qc-chips .qc-chip');
+    const chip = chips[i];
+    if (chip) { chip.classList.add('flash'); setTimeout(() => chip.classList.remove('flash'), 300); }
+}
+
+function qcMenu(e, i) {
+    qcCloseMenu();
+    const menu = document.createElement('div');
+    menu.className = 'qc-menu';
+    menu.style.left = Math.min(e.clientX, window.innerWidth - 140) + 'px';
+    menu.style.top = Math.min(e.clientY, window.innerHeight - 120) + 'px';
+    const items = [
+        ['Edit', () => qcEdit(i)],
+        ['Copy data', () => navigator.clipboard.writeText(quickCommands[i].data).catch(()=>{})],
+        ['Delete', () => { quickCommands.splice(i, 1); qcRender(); qcSave(); }, true],
+    ];
+    items.forEach(([label, fn, danger]) => {
+        const b = document.createElement('button');
+        b.className = 'qc-menu-item' + (danger ? ' qc-menu-danger' : '');
+        b.textContent = label;
+        b.addEventListener('click', () => { fn(); qcCloseMenu(); });
+        menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    setTimeout(() => document.addEventListener('click', qcCloseMenu, { once: true }), 0);
+}
+function qcCloseMenu() { const m = document.querySelector('.qc-menu'); if (m) m.remove(); }
+
+// Create (i === -1) or edit (i >= 0) in the shared modal.
+function qcEdit(i) {
+    const qc = i >= 0 ? quickCommands[i] : qcLastForm;
+    const body = document.getElementById('modal-body');
+    body.innerHTML = `
+        <h3>${i >= 0 ? 'Edit Quick Command' : 'New Quick Command'}</h3>
+        <div class="qc-form">
+            <div><label>Name (shown on the button)</label><input id="qc-f-name" value="${qc.name.replace(/"/g,'&quot;')}"></div>
+            <div><label>Data to send</label><input id="qc-f-data" value="${qc.data.replace(/"/g,'&quot;')}"></div>
+            <div><label>Suffix (non-shell mode)</label>
+                <select id="qc-f-suffix">
+                    <option value=""${qc.suffix===''?' selected':''}>None</option>
+                    <option value="\n"${qc.suffix==='\n'?' selected':''}>LF (\n)</option>
+                    <option value="\r\n"${qc.suffix==='\r\n'?' selected':''}>CRLF (\r\n)</option>
+                </select></div>
+            <div id="qc-f-error" style="color: var(--danger-color); font-size: 11px; min-height: 14px;"></div>
+            <div class="qc-form-actions">
+                <button class="action-btn" id="qc-f-save">Save</button>
+                <button class="tool-btn" id="qc-f-cancel">Cancel</button>
+            </div>
+        </div>`;
+    document.getElementById('modal').style.display = 'block';
+    document.getElementById('qc-f-cancel').onclick = closeModal;
+    document.getElementById('qc-f-save').onclick = () => {
+        const name = document.getElementById('qc-f-name').value.trim();
+        const data = document.getElementById('qc-f-data').value;
+        if (!name || !data) {
+            const err = document.getElementById('qc-f-error');
+            if (err) err.textContent = 'Name and data are required.';
+            return;
+        }
+        const suffix = document.getElementById('qc-f-suffix').value;
+        qcLastForm = { name, data, suffix }; // prefill next time
+        if (i >= 0) quickCommands[i] = { name, data, suffix };
+        else quickCommands.push({ name, data, suffix });
+        qcRender(); qcSave(); closeModal();
+    };
+    document.getElementById('qc-f-name').focus();
+}
+
+// Manage panel: table with checkboxes, bulk delete, reorder (Ctrl+N order
+// follows this list), and per-row edit via qcEdit(i).
+function qcManage() {
+    const body = document.getElementById('modal-body');
+    if (!quickCommands.length) {
+        body.innerHTML = `<h3>Manage Quick Commands</h3>
+            <div class="qc-form"><p style="color: var(--text-secondary); font-size: 12px;">
+            No quick commands yet. Close this dialog and click ＋ to create one.</p>
+            <div class="qc-form-actions"><button class="tool-btn" id="qc-m-close">Close</button></div></div>`;
+        document.getElementById('modal').style.display = 'block';
+        document.getElementById('qc-m-close').onclick = closeModal;
+        return;
+    }
+    const rows = quickCommands.map((qc, i) => `
+        <tr data-i="${i}">
+            <td class="qc-m-check"><input type="checkbox" class="qc-m-cb"></td>
+            <td class="qc-m-name">${escapeHtml(qc.name)}${qc.suffix ? ' <span style="opacity:0.6">⏎</span>' : ''}</td>
+            <td class="qc-m-data" title="${escapeHtml(qc.data)}">${escapeHtml(qc.data)}</td>
+            <td class="qc-m-ops">
+                <button class="qc-m-op" data-op="up" title="Move up">↑</button>
+                <button class="qc-m-op" data-op="down" title="Move down">↓</button>
+                <button class="qc-m-op" data-op="edit" title="Edit">✏</button>
+                <button class="qc-m-op qc-m-op-danger" data-op="del" title="Delete">🗑</button>
+            </td>
+        </tr>`).join('');
+    body.innerHTML = `
+        <h3>Manage Quick Commands</h3>
+        <div class="qc-m-toolbar">
+            <label class="qc-m-selall"><input type="checkbox" id="qc-m-all"> Select all</label>
+            <span id="qc-m-count" class="qc-m-count"></span>
+            <span style="flex:1"></span>
+            <button class="qc-m-danger-btn" id="qc-m-del">Delete selected</button>
+            <button class="tool-btn" id="qc-m-close">Close</button>
+        </div>
+        <div class="qc-m-table-wrap"><table class="qc-m-table">
+            <thead><tr><th></th><th>Name</th><th>Data</th><th></th></tr></thead>
+            <tbody id="qc-m-tbody">${rows}</tbody>
+        </table></div>`;
+    document.getElementById('modal').style.display = 'block';
+    document.getElementById('modal-content')?.classList.add('wide');
+    const tbody = document.getElementById('qc-m-tbody');
+    const countEl = document.getElementById('qc-m-count');
+    const updateCount = () => {
+        const n = tbody.querySelectorAll('.qc-m-cb:checked').length;
+        countEl.textContent = n ? n + ' selected' : '';
+    };
+    tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('.qc-m-op');
+        if (!btn) return;
+        const i = parseInt(btn.closest('tr').dataset.i, 10);
+        const op = btn.dataset.op;
+        if (op === 'up' && i > 0) { [quickCommands[i-1], quickCommands[i]] = [quickCommands[i], quickCommands[i-1]]; qcSave(); qcManage(); }
+        else if (op === 'down' && i < quickCommands.length - 1) { [quickCommands[i], quickCommands[i+1]] = [quickCommands[i+1], quickCommands[i]]; qcSave(); qcManage(); }
+        else if (op === 'edit') { qcEdit(i); }
+        else if (op === 'del') { quickCommands.splice(i, 1); qcRender(); qcSave(); qcManage(); }
+    });
+    tbody.addEventListener('change', (e) => { if (e.target.classList.contains('qc-m-cb')) updateCount(); });
+    document.getElementById('qc-m-all').addEventListener('change', function() {
+        tbody.querySelectorAll('.qc-m-cb').forEach(cb => cb.checked = this.checked);
+        updateCount();
+    });
+    document.getElementById('qc-m-del').addEventListener('click', () => {
+        const doomed = [...tbody.querySelectorAll('.qc-m-cb:checked')].map(cb => parseInt(cb.closest('tr').dataset.i, 10));
+        if (!doomed.length) return;
+        // delete from highest index down so earlier indices stay valid
+        doomed.sort((a, b) => b - a).forEach(i => quickCommands.splice(i, 1));
+        qcRender(); qcSave(); qcManage();
+    });
+    document.getElementById('qc-m-close').onclick = closeModal;
+    updateCount();
+}
+
+// Persist: rides the existing /saveconfig round-trip.
+function qcSave() { saveConfigSilently(); }
+function qcLoad(config) {
+    quickCommands = (config && Array.isArray(config.QuickCommands)) ? config.QuickCommands : [];
+    qcRender();
+}
 
 // ================= REST OF HELPER FUNCTIONS =================
 function setupSmartCopy() { const output = document.getElementById('output'); output.addEventListener('scroll', vsOnScroll, { passive: true }); output.addEventListener('keydown', function(e) { if (e.key === 'Enter') { const selection = window.getSelection().toString(); if (selection) { e.preventDefault(); navigator.clipboard.writeText(selection).catch(err => {}); } } }); }
@@ -683,11 +889,11 @@ function applyTheme(themeData) { if (!themeData) return; const root = document.d
 function handleThemePresetChange() { const sel = document.getElementById('theme-preset-select'); const customArea = document.getElementById('custom-theme-area'); const name = sel.value; if (name === "Custom") { customArea.style.display = 'flex'; handleCustomThemeChange(); } else { customArea.style.display = 'none'; applyTheme(themePresets[name]); saveConfigSilently(); } }
 function handleCustomThemeChange() { applyTheme({ Name: "Custom", Background: document.getElementById('theme-bg').value, Foreground: document.getElementById('theme-fg').value, Cursor: document.getElementById('theme-cursor').value, ...themePresets["Default"] }); saveConfigSilently(); }
 function listScripts() { fetch('/listscripts', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') { const select = document.getElementById('script-select'); select.innerHTML = '<option value="">-- Select Script --</option>'; data.scripts.forEach(s => { const opt = document.createElement('option'); opt.value = s; opt.textContent = s; select.appendChild(opt); }); } }); }
-function runScript() { const filename = document.getElementById('script-select').value; if (!filename) return alert("Please select a script first."); isScriptRunning = true; document.getElementById('script-status-text').textContent = 'Running...'; document.getElementById('script-status-text').style.color = 'var(--success-color)'; document.getElementById('script-console').innerHTML = ''; const formData = new FormData(); formData.append('filename', filename); fetch('/runscript', { method: 'POST', body: formData }).then(r => r.json()).then(data => { if (data.status !== 'ok') { appendToScriptConsole("❌ Failed to start: " + data.message); isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Error'; document.getElementById('script-status-text').style.color = 'var(--danger-color)'; } else { appendToScriptConsole(`🚀 Executing: ${filename}`); } }); }
+function runScript() { const filename = document.getElementById('script-select').value; if (!filename) { appendToScriptConsole('Please select a script first.'); return; } isScriptRunning = true; document.getElementById('script-status-text').textContent = 'Running...'; document.getElementById('script-status-text').style.color = 'var(--success-color)'; document.getElementById('script-console').innerHTML = ''; const formData = new FormData(); formData.append('filename', filename); fetch('/runscript', { method: 'POST', body: formData }).then(r => r.json()).then(data => { if (data.status !== 'ok') { appendToScriptConsole("❌ Failed to start: " + data.message); isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Error'; document.getElementById('script-status-text').style.color = 'var(--danger-color)'; } else { appendToScriptConsole(`🚀 Executing: ${filename}`); } }); }
 function stopScript() { fetch('/stopscript', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') { isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Stopped'; document.getElementById('script-status-text').style.color = 'var(--warning-color)'; /* Delay clear: backend still broadcasts trailing stop/finished messages via WS; clearing immediately re-renders them as leftover output. */ setTimeout(() => { document.getElementById('script-console').innerHTML = ''; }, 800); } }); }
 function appendToScriptConsole(msg) { const con = document.getElementById('script-console'); const div = document.createElement('div'); div.textContent = msg; con.appendChild(div); con.scrollTop = con.scrollHeight; if (msg.includes("finished") || msg.includes("stopped") || msg.includes("Error")) { isScriptRunning = false; document.getElementById('script-status-text').textContent = 'Idle'; document.getElementById('script-status-text').style.color = 'var(--text-secondary)'; } }
 function toggleConnection() { isConnected ? disconnect() : connect(); }
-function connect() { fetch('/connect', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'connected') { isConnected = true; updateConnectionStatus(true); } else { alert('Connection failed: ' + data.message); } }); }
+function connect() { fetch('/connect', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'connected') { isConnected = true; updateConnectionStatus(true); } else { addToOutput('[System] Connection failed: ' + data.message); } }); }
 function disconnect() { fetch('/disconnect', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'disconnected') { isConnected = false; updateConnectionStatus(false); } }); }
 function scanPorts() { const modalBody = document.getElementById('modal-body'); modalBody.innerHTML = `<h3>Scanning...</h3>`; document.getElementById('modal').style.display = 'block'; fetch('/scan', { method: 'POST' }).then(r => r.json()).then(data => { if (data.status === 'ok') showPortSelection(data.ports); else showPortSelectionError(data.message); }).catch(error => showPortSelectionError(error.message)); }
 function setMode(mode) { if (shellEnabled) return; const formData = new FormData(); formData.append('mode', mode); fetch('/setmode', { method: 'POST', body: formData }).then(r => r.json()).then(data => { if (data.status === 'ok') { currentMode = mode; updateMode(mode); } }); }
@@ -740,7 +946,7 @@ function hexToAnsi(hex) { const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2}
 function updateHighlightRules(lines) { let rules = lines.map(line => { const parts = line.split(':'); if (parts.length < 2) return null; try { return { regexStr: parts[0], color: parts.slice(1).join(':') }; } catch (e) { return null; } }).filter(r => r !== null); try { const regexParts = rules.map(r => `(${r.regexStr})`); highlightColorMap = rules.map(r => r.color); if (regexParts.length > 0) { combinedHighlightRegex = new RegExp(regexParts.join('|'), 'gi'); } else { combinedHighlightRegex = null; } } catch (e) { combinedHighlightRegex = null; } }
 function addToHistory(command) { if (!command || command.trim() === '' || shellEnabled) return; command = command.trim(); if (historyList.length > 0 && historyList[historyList.length - 1] === command) return; historyList.push(command); if (historyList.length > 100) historyList.shift(); historyIndex = historyList.length; }
 function navigateHistory(direction) { if (historyList.length === 0 || shellEnabled) return; historyIndex = Math.max(0, Math.min(historyList.length - 1, historyIndex + direction)); document.getElementById('input').value = historyList[historyIndex]; }
-function sendData() { if (shellEnabled) return; const input = document.getElementById('input'); let data = input.value; if (data === '') return; const suffixSelect = document.getElementById('suffix-select'); if (suffixSelect) { const suffixVal = suffixSelect.value; if (suffixVal === '\\n') { data += '\n'; } else if (suffixVal === '\\r\\n') { data += '\r\n'; } } const formData = new FormData(); formData.append('data', data); fetch('/send', { method: 'POST', body: formData }).then(r => r.json()).then(res => { if (res.status === 'ok') { addToHistory(input.value); input.value = ''; historyIndex = historyList.length; } else { alert('Send failed: ' + res.message); } }); }
+function sendData() { if (shellEnabled) return; const input = document.getElementById('input'); let data = input.value; if (data === '') return; const suffixSelect = document.getElementById('suffix-select'); if (suffixSelect) { const suffixVal = suffixSelect.value; if (suffixVal === '\\n') { data += '\n'; } else if (suffixVal === '\\r\\n') { data += '\r\n'; } } const formData = new FormData(); formData.append('data', data); fetch('/send', { method: 'POST', body: formData }).then(r => r.json()).then(res => { if (res.status === 'ok') { addToHistory(input.value); input.value = ''; historyIndex = historyList.length; } else { addToOutput('[System] Send failed: ' + res.message); } }); }
 function handleInputKeydown(event) { if (event.key === 'Tab') { if (!shellEnabled) { event.preventDefault(); const formData = new FormData(); formData.append('data', '\t'); fetch('/send', { method: 'POST', body: formData }); } return; } if (shellEnabled) return; if (event.key === 'Enter') { event.preventDefault(); sendData(); } else if (event.key === 'ArrowUp') { event.preventDefault(); navigateHistory(-1); } else if (event.key === 'ArrowDown') { event.preventDefault(); navigateHistory(1); } }
 function exportLog() {
     // Zero main-thread cost: the backend streams/copies the session log file.
@@ -756,7 +962,7 @@ function updateTimestampStatus(enabled) { timestampEnabled = enabled; document.g
 function updateShellStatus(enabled) { shellEnabled = enabled; document.getElementById('shell-on').checked = enabled; document.getElementById('shell-off').checked = !enabled; }
 function showPortSelection(ports) { const modalBody = document.getElementById('modal-body'); if (ports.length === 0) { modalBody.innerHTML = `<p>No available ports.</p>`; return; } modalBody.innerHTML = `<h3>Select Port</h3><div class="port-list"></div>`; const list = modalBody.querySelector('.port-list'); ports.forEach(port => { const btn = document.createElement('button'); btn.className = 'tool-btn'; btn.style.margin = '5px'; btn.textContent = port; btn.onclick = () => { document.getElementById('port-input').value = port; updatePortInfo(port, document.getElementById('baud-input').value); saveConfigSilently(); closeModal(); }; list.appendChild(btn); }); }
 function showPortSelectionError(msg) { document.getElementById('modal-body').innerHTML = `<p style="color:red;">Error: ${msg}</p>`; }
-function closeModal() { document.getElementById('modal').style.display = 'none'; }
+function closeModal() { document.getElementById('modal').style.display = 'none'; const mc = document.getElementById('modal-content'); if (mc) mc.classList.remove('wide'); }
 
 async function showExportDialog(content, defaultName) {
     // content === null means: export the backend session log file (zero-copy).
@@ -863,7 +1069,7 @@ class LogFileView {
             body: JSON.stringify({ tabId: this.tabId, path: path })
         });
         const data = await resp.json();
-        if (data.status !== 'ok') { alert('Failed to open log: ' + data.message); return; }
+        if (data.status !== 'ok') { addToOutput('[System] Failed to open log: ' + data.message); return; }
         this.totalLines = data.totalLines;
         this._initOutput();
     }

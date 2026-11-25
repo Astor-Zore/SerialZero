@@ -39,3 +39,33 @@
   brightmagenta = "#ae81ff"
   brightcyan = "#a1efe4"
   brightwhite = "#f9f8f5"
+
+[[quick_commands]]
+  name = "p2g_test_48k_2ch"
+  data = "p2g_test start pcm 1000 48000 2"
+  suffix = "\n"
+
+[[quick_commands]]
+  name = "p2g_test_opus"
+  data = "p2g_test start opus 1000"
+  suffix = "\n"
+
+[[quick_commands]]
+  name = "p2g_test_16k_1ch"
+  data = "p2g_test start pcm 1000 16000 1"
+  suffix = "\n"
+
+[[quick_commands]]
+  name = "p2g_test stop"
+  data = "p2g_test stop"
+  suffix = "\n"
+
+[[quick_commands]]
+  name = "p2g_start"
+  data = "audio_policy start 13"
+  suffix = "\n"
+
+[[quick_commands]]
+  name = "p2g_stop"
+  data = "audio_policy stop 13"
+  suffix = "\n"

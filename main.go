@@ -98,6 +98,14 @@ type Config struct {
 		Groups []string `toml:"groups"`
 	} `toml:"highlight"`
 	Theme Theme `toml:"theme"`
+	QuickCommands []QuickCommand `toml:"quick_commands"`
+}
+
+// QuickCommand is a user-defined one-click send button (persisted in config).
+type QuickCommand struct {
+	Name   string `toml:"name" json:"name"`
+	Data   string `toml:"data" json:"data"`
+	Suffix string `toml:"suffix" json:"suffix"` // "", "\n", "\r\n" (non-shell mode only)
 }
 
 /**
