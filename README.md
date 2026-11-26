@@ -1,179 +1,109 @@
 # SerialZero
 
-> **SerialZero** — A professional, elegant serial port assistant with a modern Web UI.
+**A professional serial terminal for Windows — native shell emulation, real-time visualization, zero clutter.**
 
 [![GitHub](https://img.shields.io/github/stars/Astor-Zore/SerialZero?style=social)](https://github.com/Astor-Zore/SerialZero)
 
 ---
 
-## 📌 Overview / 项目概述
+## Overview
 
-<div align="center">
-  <div style="
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 30px;
-    margin: 20px 0;
-    max-width: 900px;
-  ">
-    <!-- Logo 图片 -->
-    <div>
-      <img src="https://github.com/Astor-Zore/SerialZero/raw/master/pictures/title.png" 
-           alt="SerialZero Logo" 
-           width="100%" 
-           style="display: block;">
-    </div>
-  </div>
-</div>
-
----
-
-## 🎨 Screenshots / 截图
+SerialZero pairs a single-file Go backend with an embedded web frontend, delivered as one native Windows executable with no runtime dependencies. A frameless WebView2 window hosts a terminal built with xterm.js; serial data streams over WebSocket with sub-millisecond latency.
 
 <p align="center">
-  <table>
-    <tr>
-      <!-- 第一行 -->
-      <td align="center">
-        <img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/ansi.png" width="500" alt=""><br>
-        <strong>SHELL</strong>
-      </td>
-      <td align="center">
-        <img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/highlight.png" width="500" alt=""><br>
-        <strong>NOMAL</strong>
-      </td>
-    </tr>
-  </table>
+  <img src="https://github.com/Astor-Zore/SerialZero/raw/master/pictures/title.png" alt="SerialZero" width="640">
 </p>
 
+| | |
+|---|---|
+| **Shell mode** | Full ANSI/VT terminal emulation — escape codes, colors, cursor control, exactly as a real terminal |
+| **RAW mode** | Traditional serial view with virtualized rendering — hundreds of thousands of lines at 60 fps |
+| **Quick commands** | One-click chips with `Ctrl+1..9` hotkeys; editable inline |
+| **Command palette** | `Ctrl+K` — fuzzy search every action in the app |
+| **Highlighting** | Per-session `regex:color` rules, applied in real time |
+| **Session logs** | Automatic per-connection logging with timestamp gutters |
+| **Undo** | Cleared the buffer by mistake? Undo restores it for 5 seconds |
+| **Echo suppression** | Device loopback is filtered automatically |
+| **Lua automation** | Scripted send/wait sequences in `./scripts/` |
+| **Multi-instance** | Run several SerialZero windows on different ports |
 
----
+## Screenshots
 
-## ✨ Features / 功能亮点
+<p align="center">
+  <a href="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/ansi.png"><img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/ansi.png" width="430" alt="Shell mode"></a>
+  <a href="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/highlight.png"><img src="https://github.com/Astor-Zore/SerialZero/blob/master/pictures/highlight.png" width="430" alt="RAW mode with highlighting"></a>
+</p>
+<p align="center"><sub>Shell mode (left) · RAW mode with custom highlights (right)</sub></p>
 
-- **Elegant UI** / **优雅的UI界面**  
-  Access via `localhost:8080`  
-  通过对 `localhost:8080` 端口进行访问
+## Quick Start
 
-- **Terminal Emulation** / **终端模拟功能**  
-  Correctly handles ANSI escape codes and terminal control characters, rendering them exactly as they appear  
-  能够正确转义 ANSI，对终端的控制字符做到原模原样的呈现
+1. Run `SerialZero.exe` — a native window opens; no browser tab needed.
+2. `F3` to scan ports, `F2` to connect.
+3. Type in the terminal. That's it.
 
-- **Traditional Serial Communication** / **传统串口收发**  
-  Filters out control characters and displays messages as-is  
-  过滤控制字符后，将消息原模原样呈现
+Or open `http://localhost:8080` from any browser on the same machine.
 
-- **Automatic Logging** / **自动日志**  
-  Logs are saved in the `./logs` directory with the format `COM4_20260322_14:33:34.log`, where each log file corresponds to a session from connection to disconnection  
-  会在目录下 `./logs` 下按照 `COM4_20260322_14:33:34.log` 的格式，以连接端口和断开作为一次日志进行输出
+## Keybindings
 
-- **Timestamp Support** / **时间戳支持**  
-  Option to prepend timestamps to messages  
-  可自动控制在消息前是否附加时间戳
+| Action | Key |
+|---|---|
+| Connect / disconnect | `F2` |
+| Scan ports | `F3` |
+| Command palette | `Ctrl+K` |
+| Quick command 1–9 | `Ctrl+1..9` |
+| Toggle mode | click `SHELL`/`RAW` badge (bottom-left) |
+| Send history | `↑` / `↓` |
+| Close modal / palette | `Esc` |
 
-- **HEX Support** / **HEX 支持**  
-  Supports traditional serial communication with both ASCII and HEX display and sending modes  
-  支持传统的串口收发，可按照 ASCII 或是 HEX 进行发送和显示
+## Configuration
 
-- **Custom Highlight Groups** / **高亮组自定义**  
-  Customizable highlight groups to match personal logging preferences  
-  可通过自行定义高亮组，用于配合自己的日志习惯进行呈现
-
-- **Message History** / **消息发送历史**  
-  Stores up to 100 past messages; use the `↑` arrow key to quickly reuse the previous command/message  
-  会保存近 100 条历史消息，可通过 `↑` 键直接使用上一次的命令/消息
-
----
-
-## 🚀 Quick Start / 快速开始
-
-1. Run `SerialZero.exe`  
-   运行 `SerialZero.exe`
-
-2. Open `localhost:8080` in your browser  
-   在浏览器打开 `localhost:8080`
-
-3. Select and open the desired serial port  
-   选择并打开串口
-
----
-
-## ⚙️ Configuration / 配置说明
-
-Edit `config.toml` in the project root (a default file is generated on first run):
+`config.toml` is generated with defaults on first run; most settings are editable live from the sidebar and saved silently.
 
 ```toml
 [serial]
-  port = "COM43"
-  baud = 115200
-  databits = 8
-  stopbits = 1
-  parity = "N"
+port = "COM43"
+baud = 115200
+databits = 8
+stopbits = 1
+parity = "N"
 
 [log]
-  path = "./logs"
+path = "./logs"          # anchored to the exe directory
 
 [ui]
-  font = "CaskaydiaMono NF"
-  fontsize = 14
-  timestamp = true
-  shell = true
+font = "Cascadia Code"   # any monospace font detected on the system
+fontsize = 14
+timestamp = true
+shell = true
 
 [highlight]
-  groups = ["ok:#ff0000", "error:#ff0000", "warn:#ffa500", "debug:#00ffff"]
-
+groups = ["error:#ff0000", "warn:#ffa500", "ok:#00ff00"]
 ```
 
----
+## Build
 
-
-
-## 🧭 Usage / 使用说明
-
-### Keybindings / 常用按键
-
-| Action | Key | Description |
-|--------|-----|-------------|
-| Help menu | `F1` | 显示快捷键说明 |
-| Connect / Disconnect | `F2` | 连接/断开串口 |
-| Scan ports | `F3` | 扫描可用串口列表 |
-| Change baud rate | `F4` | 弹窗修改波特率 |
-| Close modal | `Esc` | 关闭当前模态窗口 |
-| CMD history | `PageUp/PageDown` / `↑/↓` | 翻页查看历史记录 |
-
-### Highlight Rules / 高亮规则
-
-- Case-insensitive by default.
-- Format: `pattern:color`.
-- Example: `ok:#00ff00`, `ERROR:#ff0000`, `warn:#ffaa00`.
-
----
-
-## 📦 Build & Development / 构建与开发
+Requires Go 1.20+ and a Windows toolchain:
 
 ```bash
-# go install mod
 go mod tidy
-
-# Build (Go 1.20+ recommended)
 go build -ldflags="-H windowsgui" -o SerialZero.exe
 ```
 
----
+The frontend is embedded at compile time — the binary is the whole distribution.
 
-## 🤝 Contributing / 贡献
+## Architecture Notes
 
-[Astor-Zero]([Astor-Zore (Astor.Jiang)](https://github.com/Astor-Zore))
+- `main.go` — backend: Win32 frameless window, WebView2 host, Gin server, serial I/O, Lua engine
+- `static/` + `index.html` — embedded frontend (xterm.js, virtualized raw view)
+- `scripts/` — Lua automation scripts (`send`, `delay`, `log`, `wait`)
+- `winres/` — icon resources (`.syso` files are pre-built; regenerate only if the icon changes)
 
----
+Serial port discovery reads the Windows registry (`HARDWARE\DEVICEMAP\SERIALCOMM`), so builds target Windows only.
 
-## 📄 License
+## Contributing
 
-本项目遵循 MIT 许可证。
+By [Astor.Jiang](https://github.com/Astor-Zore) — issues and PRs welcome.
 
----
+## License
 
-> 📌 Repository: https://github.com/Astor-Zore/SerialZero
+MIT
