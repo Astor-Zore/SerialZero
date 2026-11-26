@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
+	"unicode/utf16"
 	"sort"
 	"strconv"
 	"strings"
@@ -152,6 +154,15 @@ type SessionLog struct {
 
 // StartSessionLog creates the session log file and starts the writer goroutine.
 func StartSessionLog(port, logDir string, timestamp bool) *SessionLog {
+	// Anchor relative log dirs to the exe location: a relative "./logs"
+	// resolves against the process CWD, which drifts depending on how the
+	// app was launched (shortcut, double-click, different shell) — the
+	// write side and the export side then look in different places.
+	if !filepath.IsAbs(logDir) {
+		if exePath, err := os.Executable(); err == nil {
+			logDir = filepath.Join(filepath.Dir(exePath), logDir)
+		}
+	}
 	os.MkdirAll(logDir, 0755)
 	name := fmt.Sprintf("%s_%s.log", sanitizeLogName(port), time.Now().Format("20060102_15-04-05"))
 	path := filepath.Join(logDir, name)
@@ -325,6 +336,8 @@ var (
 	procDefWindowProcW = moduser32.NewProc("DefWindowProcW")
 	procIsZoomed = moduser32.NewProc("IsZoomed")
 	procSystemParametersInfoW = moduser32.NewProc("SystemParametersInfoW")
+	procMonitorFromWindow = moduser32.NewProc("MonitorFromWindow")
+	procGetMonitorInfoW   = moduser32.NewProc("GetMonitorInfoW")
 	procRegisterClassExW              = moduser32.NewProc("RegisterClassExW")
 	procCreateWindowExW               = moduser32.NewProc("CreateWindowExW")
 	procLoadCursorW                   = moduser32.NewProc("LoadCursorW")
@@ -332,6 +345,7 @@ var (
 	procSetProcessDpiAwarenessContext = moduser32.NewProc("SetProcessDpiAwarenessContext")
 	modole32                 = syscall.NewLazyDLL("ole32.dll")
 	procCoInitializeEx        = modole32.NewProc("CoInitializeEx")
+	procCoUninitialize        = modole32.NewProc("CoUninitialize")
 )
 
 const (
@@ -357,6 +371,7 @@ const (
 	SWP_NOZORDER = 0x0004
 	SWP_NOMOVE = 0x0002
 	SWP_NOSIZE = 0x0001
+	SWP_NOACTIVATE = 0x0010
 
 	WM_DESTROY = 0x0002
 	WM_SIZE = 0x0005
@@ -425,7 +440,31 @@ type MINMAXINFO struct {
 	ptMaxTrackSize POINT
 }
 
+// MONITORINFO: cbSize must be set before calling GetMonitorInfoW.
+type MONITORINFO struct {
+	CbSize    uint32
+	RcMonitor RECT
+	RcWork    RECT
+	DwFlags   uint32
+}
+
+const MONITOR_DEFAULTTONEAREST = 2
+
 var appHwnd uintptr = 0
+
+// Manual-maximize state (SW_MAXIMIZE is not used; see toggleMaximizeWindow).
+var wasMaximizedManual = false
+var maximizedBeforeMaximize = RECT{}
+
+// getWindowRect helper; returns zero RECT on failure.
+func getWindowRect(hwnd uintptr) RECT {
+	var r RECT
+	ret, _, _ := procGetWindowRect.Call(hwnd, uintptr(unsafe.Pointer(&r)))
+	if ret == 0 {
+		return RECT{}
+	}
+	return r
+}
 var wndProcCallback uintptr = 0
 
 // Callbacks for hiding/showing child windows recursively
@@ -574,8 +613,23 @@ func windowProc(hwnd syscall.Handle, msg uint32, wparam uintptr, lparam uintptr)
 		return 0
 	}
 	if msg == WM_GETMINMAXINFO {
+		// Use the work area of the monitor the window is on, not the primary
+		// monitor's (SPI_GETWORKAREA): on multi-monitor setups maximizing on a
+		// secondary monitor would otherwise size the window to the primary
+		// monitor's work area — overflowing the statusbar off the screen.
 		var rect RECT
-		procSystemParametersInfoW.Call(uintptr(SPI_GETWORKAREA), 0, uintptr(unsafe.Pointer(&rect)), 0)
+		mon, _, _ := procMonitorFromWindow.Call(uintptr(hwnd), uintptr(MONITOR_DEFAULTTONEAREST))
+		if mon != 0 {
+			mi := MONITORINFO{CbSize: uint32(unsafe.Sizeof(MONITORINFO{}))}
+			r1, _, _ := procGetMonitorInfoW.Call(mon, uintptr(unsafe.Pointer(&mi)))
+			if r1 != 0 {
+				rect = mi.RcWork
+			} else {
+				procSystemParametersInfoW.Call(uintptr(SPI_GETWORKAREA), 0, uintptr(unsafe.Pointer(&rect)), 0)
+			}
+		} else {
+			procSystemParametersInfoW.Call(uintptr(SPI_GETWORKAREA), 0, uintptr(unsafe.Pointer(&rect)), 0)
+		}
 		mmi := (*MINMAXINFO)(unsafe.Pointer(lparam))
 		mmi.ptMaxPosition.X = rect.Left
 		mmi.ptMaxPosition.Y = rect.Top
@@ -711,15 +765,70 @@ func main() {
 		procShowWindow.Call(appHwnd, uintptr(SW_MINIMIZE))
 	})
 	w.Bind("maximizeWindow", func() {
-		procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+		if wasMaximizedManual {
+			return
+		}
+		// Same manual maximize as toggleMaximizeWindow (see comment there).
+		mon, _, _ := procMonitorFromWindow.Call(appHwnd, uintptr(MONITOR_DEFAULTTONEAREST))
+		if mon == 0 {
+			procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+			return
+		}
+		mi := MONITORINFO{CbSize: uint32(unsafe.Sizeof(MONITORINFO{}))}
+		r1, _, _ := procGetMonitorInfoW.Call(mon, uintptr(unsafe.Pointer(&mi)))
+		if r1 == 0 {
+			procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+			return
+		}
+		maximizedBeforeMaximize = getWindowRect(appHwnd)
+		wasMaximizedManual = true
+		procSetWindowPos.Call(
+			appHwnd, 0,
+			uintptr(mi.RcWork.Left), uintptr(mi.RcWork.Top),
+			uintptr(mi.RcWork.Right-mi.RcWork.Left), uintptr(mi.RcWork.Bottom-mi.RcWork.Top),
+			uintptr(SWP_NOZORDER|SWP_NOACTIVATE))
+		resizeChildWindows(appHwnd)
 	})
 	w.Bind("toggleMaximizeWindow", func() {
-		ret, _, _ := procIsZoomed.Call(appHwnd)
-		if ret != 0 {
-			procShowWindow.Call(appHwnd, uintptr(SW_RESTORE))
-		} else {
-			procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+		if wasMaximizedManual {
+			wasMaximizedManual = false
+			if r := maximizedBeforeMaximize; r != (RECT{}) {
+				procSetWindowPos.Call(
+					appHwnd, 0,
+					uintptr(r.Left), uintptr(r.Top),
+					uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top),
+					uintptr(SWP_NOZORDER|SWP_NOACTIVATE))
+			} else {
+				procShowWindow.Call(appHwnd, uintptr(SW_RESTORE))
+			}
+			resizeChildWindows(appHwnd)
+			return
 		}
+		// Manual maximize instead of SW_MAXIMIZE: with WM_NCCALCSIZE->0 the OS
+		// maximizes WS_THICKFRAME windows to the work area PLUS the resize
+		// border, so our frameless client spills off-screen (statusbar cut on
+		// the primary, whole window off-screen on secondary monitors). Place
+		// the window exactly on the work area of its current monitor instead.
+		mon, _, _ := procMonitorFromWindow.Call(appHwnd, uintptr(MONITOR_DEFAULTTONEAREST))
+		if mon == 0 {
+			procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+			return
+		}
+		mi := MONITORINFO{CbSize: uint32(unsafe.Sizeof(MONITORINFO{}))}
+		r1, _, _ := procGetMonitorInfoW.Call(mon, uintptr(unsafe.Pointer(&mi)))
+		if r1 == 0 {
+			procShowWindow.Call(appHwnd, uintptr(SW_MAXIMIZE))
+			return
+		}
+		// Remember the normal position so we can restore it later.
+		maximizedBeforeMaximize = getWindowRect(appHwnd)
+		wasMaximizedManual = true
+		procSetWindowPos.Call(
+			appHwnd, 0,
+			uintptr(mi.RcWork.Left), uintptr(mi.RcWork.Top),
+			uintptr(mi.RcWork.Right-mi.RcWork.Left), uintptr(mi.RcWork.Bottom-mi.RcWork.Top),
+			uintptr(SWP_NOZORDER|SWP_NOACTIVATE))
+		resizeChildWindows(appHwnd)
 	})
 	w.Bind("closeWindow", func() {
 		procPostMessageW.Call(appHwnd, uintptr(WM_CLOSE), 0, 0)
@@ -728,6 +837,23 @@ func main() {
 	// modal move loop directly (same as clicking a real caption), bypassing
 	// WebView2's hit-test entirely. DPI-correct across monitors.
 	w.Bind("startWindowDrag", func() {
+		// If manually maximized, un-maximize first so the window can be
+		// dragged (a maximized window doesn't move). Restore to the normal
+		// position, nudged so the title stays under the cursor.
+		if wasMaximizedManual {
+			wasMaximizedManual = false
+			r := maximizedBeforeMaximize
+			var pt POINT
+			procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+			if r != (RECT{}) {
+				procSetWindowPos.Call(
+					appHwnd, 0,
+					uintptr(int32(pt.X)-64), uintptr(int32(pt.Y)-16),
+					uintptr(r.Right-r.Left), uintptr(r.Bottom-r.Top),
+					uintptr(SWP_NOZORDER|SWP_NOACTIVATE))
+				resizeChildWindows(appHwnd)
+			}
+		}
 		// Execute on the UI thread that owns the window: the modal move loop
 		// entered by DefWindowProc(WM_NCLBUTTONDOWN) only behaves correctly on
 		// the thread that created the window (Go bind callbacks otherwise run
@@ -795,6 +921,14 @@ func (a *App) runWebServer() {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
+	// Route gin's own output (incl. panic stack traces from Recovery) to the
+	// same log file — stderr is invisible under -H windowsgui.
+	if exePath, _ := os.Executable(); exePath != "" {
+		if f, err := os.OpenFile(filepath.Join(filepath.Dir(exePath), "serialzero.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			gin.DefaultErrorWriter = f
+			gin.DefaultWriter = f
+		}
+	}
 	staticFS, err := fs.Sub(staticEmbed, "static")
 	if err != nil {
 		log.Printf("Failed to get static sub-fs: %v", err)
@@ -827,6 +961,7 @@ func (a *App) runWebServer() {
 	r.POST("/connect", a.handleConnect)
 	r.POST("/disconnect", a.handleDisconnect)
 	r.POST("/scan", a.handleScan)
+	r.POST("/listfonts", a.handleListFonts)
 	r.POST("/setbaud", a.handleSetBaud)
 	r.POST("/send", a.handleSend)
 	r.POST("/setport", a.handleSetPort)
@@ -841,6 +976,7 @@ func (a *App) runWebServer() {
 	r.POST("/exportsession", a.handleExportSession)
 	r.POST("/uploadlog", a.handleUploadLog)
 	r.POST("/browsefile", a.handleBrowseFile)
+	r.POST("/browsesavefile", a.handleBrowseSaveFile)
 	r.POST("/openlog", a.handleOpenLog)
 	r.POST("/readlog", a.handleReadLog)
 	r.POST("/searchlog", a.handleSearchLog)
@@ -1019,6 +1155,110 @@ func (a *App) handleScan(c *gin.Context) {
 		sort.Strings(ports)
 	}
 	c.JSON(200, gin.H{"status": "ok", "ports": ports})
+}
+
+// ================= SYSTEM FONT ENUMERATION =================
+
+var (
+	modgdi32                  = syscall.NewLazyDLL("gdi32.dll")
+	procEnumFontFamiliesExW   = modgdi32.NewProc("EnumFontFamiliesExW")
+	procCreateCompatibleDC    = modgdi32.NewProc("CreateCompatibleDC")
+	procDeleteDC              = modgdi32.NewProc("DeleteDC")
+)
+
+const (
+	FONT_CHARSET_DEFAULT    = 1 // DEFAULT_CHARSET
+	TRUETYPE_FONTTYPE        = 0x4
+)
+
+// ENUMLOGFONTExW + NEWTEXTMETRICEXW as passed to the EnumFontFamiliesEx
+// callback. We only need the names and the font-type flags.
+type enumLogFontExW struct {
+	elfLogFont    LOGFONTW
+	elfFullName   [64 + 4]uint16 // 64 WCHARs, 4-byte aligned
+	elfStyle      [32]uint16
+	elfScript     [32]uint16
+}
+
+type LOGFONTW struct {
+	Height         int32
+	Width          int32
+	Escapement     int32
+	Orientation    int32
+	Weight         int32
+	Italic         uint8
+	Underline      uint8
+	StrikeOut      uint8
+	CharSet        uint8
+	OutPrecision   uint8
+	ClipPrecision  uint8
+	Quality        uint8
+	PitchAndFamily uint8
+	FaceName       [32]uint16
+}
+
+type newTextMetricExW struct {
+	// NEWTEXTMETRICW: 13 DWORDs + 3 BYTEs + padding; layout identical for
+	// our purposes - we don't read it, only keep the struct size stable.
+	_ [76]byte
+}
+
+var _ = newTextMetricExW{}
+
+var monoFontList []string
+var monoFontOnce sync.Once
+
+// enumFontProc is the callback for EnumFontFamiliesExW: adds every
+// TrueType monospaced face to monoFontList.
+func enumFontProc(lpLogfont uintptr, lpntm uintptr, dwType uintptr, lParam uintptr) uintptr {
+	if dwType&TRUETYPE_FONTTYPE == 0 {
+		return 1 // keep enumerating: skip non-TrueType (bitmap/raster) fonts
+	}
+	elf := (*enumLogFontExW)(unsafe.Pointer(lpLogfont))
+	// FIXED_PITCH bit is 0x01 in PitchAndFamily (0 = fixed-pitch; 1 = variable).
+	if elf.elfLogFont.PitchAndFamily&0x01 != 0 {
+		return 1 // not monospaced
+	}
+	name := syscall.UTF16ToString(elf.elfLogFont.FaceName[:])
+	if name != "" && !seenFonts[name] {
+		seenFonts[name] = true
+		monoFontList = append(monoFontList, name)
+	}
+	return 1
+}
+
+var seenFonts = map[string]bool{}
+
+func listMonospaceFonts() []string {
+	monoFontOnce.Do(func() {
+		hdc, _, _ := procCreateCompatibleDC.Call(0)
+		if hdc == 0 {
+			return
+		}
+		defer procDeleteDC.Call(hdc)
+
+		lf := LOGFONTW{}
+		lf.CharSet = FONT_CHARSET_DEFAULT
+		// PitchAndFamily: FIXED_PITCH (2) | FF_DONTCARE (0). In LOGFONT for
+		// enumeration, pitch bits: DEFAULT_PITCH=0, FIXED_PITCH=1, VARIABLE=2.
+		lf.PitchAndFamily = 0x01 // FIXED_PITCH
+
+		// The callback must be a syscall.Syscall-like function. golang-lazydll
+		// syscall.NewCallback gives us one; wrap it here.
+		cb := syscall.NewCallback(enumFontProc)
+		procEnumFontFamiliesExW.Call(
+			hdc,
+			uintptr(unsafe.Pointer(&lf)),
+			cb,
+			0,
+			0)
+		sort.Strings(monoFontList)
+	})
+	return monoFontList
+}
+
+func (a *App) handleListFonts(c *gin.Context) {
+	c.JSON(200, gin.H{"status": "ok", "fonts": listMonospaceFonts()})
 }
 
 func (a *App) handleSetBaud(c *gin.Context) {
@@ -1542,7 +1782,13 @@ func (a *App) handleExportSession(c *gin.Context) {
 	src := a.sessionLog.Path()
 	if src == "" {
 		// Session already closed — fall back to the most recent log for this port.
-		matches, _ := filepath.Glob(filepath.Join(a.config.Log.Path, sanitizeLogName(a.config.Serial.Port)+"_*.log"))
+		globDir := a.config.Log.Path
+		if !filepath.IsAbs(globDir) {
+			if exePath, err := os.Executable(); err == nil {
+				globDir = filepath.Join(filepath.Dir(exePath), globDir)
+			}
+		}
+		matches, _ := filepath.Glob(filepath.Join(globDir, sanitizeLogName(a.config.Serial.Port)+"_*.log"))
 		if len(matches) > 0 {
 			sort.Strings(matches)
 			src = matches[len(matches)-1]
@@ -1643,6 +1889,7 @@ const (
 	OFN_FILEMUSTEXIST = 0x1000
 	OFN_HIDEREADONLY = 0x4
 	OFN_PATHMUSTEXIST = 0x800
+	OFN_OVERWRITEPROMPT = 0x2
 )
 
 /**
@@ -1883,6 +2130,95 @@ func (a *App) handleBrowseFile(c *gin.Context) {
 
 	ret, _, _ := procGetOpenFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
 	if ret == 0 {
+		c.JSON(200, gin.H{"status": "ok", "path": ""})
+		return
+	}
+
+	path := syscall.UTF16ToString(fileBuf)
+	c.JSON(200, gin.H{"status": "ok", "path": path})
+}
+
+/**
+ * @brief Opens a native Windows Save-As dialog and returns the chosen path.
+ */
+func (a *App) handleBrowseSaveFile(c *gin.Context) {
+	// Catch any panic HERE and write it to serialzero.log — gin.Recovery()
+	// returns 500 but its stack trace is lost under -H windowsgui, which is
+	// exactly why this bug was invisible so far.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("browsesavefile PANIC: %v\n%s", r, debug.Stack())
+			c.JSON(200, gin.H{"status": "error", "message": fmt.Sprintf("panic: %v", r)})
+		}
+	}()
+	log.Printf("browsesavefile: handler entered, appHwnd=%d", appHwnd)
+	// The legacy GetSaveFileNameW is forwarded to the COM-based IFileDialog on
+	// modern Windows; it silently fails unless this thread has initialized COM.
+	// Gin worker goroutines never do, so init here.
+	// Only pair CoUninitialize with a genuine S_OK — S_FALSE means the thread
+	// was already initialized (someone else owns the balance).
+	hr, _, _ := procCoInitializeEx.Call(0, uintptr(0x2)) // COINIT_APARTMENTTHREADED
+	if hr == 0 {
+		defer func() { procCoUninitialize.Call() }()
+	}
+	log.Printf("browsesavefile: CoInitializeEx hr=0x%x", hr)
+	var modComdlg32 = syscall.NewLazyDLL("comdlg32.dll")
+	var procGetSaveFileNameW = modComdlg32.NewProc("GetSaveFileNameW")
+
+	var req struct {
+		DefaultName string `json:"defaultName"`
+	}
+	_ = c.ShouldBindJSON(&req) // optional body
+
+	// syscall.StringToUTF16 PANICS on the embedded NULs that Win32 filter
+	// strings require (double-NUL-terminated list) — build it by hand.
+	filterUTF16 := func(s string) []uint16 {
+		u := make([]uint16, 0, len(s)+1)
+		for _, r := range s {
+			if r == 0 {
+				u = append(u, 0)
+			} else {
+				u = append(u, utf16.Encode([]rune{r})...)
+			}
+		}
+		return u
+	}
+	filterParts := []string{"Log Files (*.log;*.txt)", "\x00", "*.log;*.txt", "\x00", "All Files (*.*)", "\x00", "*.*", "\x00", "\x00"}
+	var filterBuf []uint16
+	for _, p := range filterParts {
+		filterBuf = append(filterBuf, filterUTF16(p)...)
+	}
+	fileBuf := make([]uint16, 32767)
+	if req.DefaultName != "" {
+		// StringToUTF16 panics on embedded NULs; the frontend can send them
+		// (e.g. a stale path in the input). Strip and cap the length.
+		name := strings.ReplaceAll(req.DefaultName, "\x00", "")
+		if len(name) > 4096 {
+			name = name[:4096]
+		}
+		utf16s := syscall.StringToUTF16(name)
+		copy(fileBuf, utf16s)
+	}
+
+	ofn := OPENFILENAMEW{
+		LStructSize: uint32(unsafe.Sizeof(OPENFILENAMEW{})),
+		HwndOwner:   syscall.Handle(appHwnd),
+		LpstrFilter: &filterBuf[0],
+		LpstrFile:   &fileBuf[0],
+		NMaxFile:    uint32(len(fileBuf)),
+		Flags:       OFN_OVERWRITEPROMPT | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST,
+	}
+
+	ret, _, _ := procGetSaveFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	if ret == 0 {
+		// Distinguish "user cancelled" from a real failure (e.g. bad struct
+		// layout, invalid owner HWND): 0 error code = cancel.
+		procCommDlgExtendedError := modComdlg32.NewProc("CommDlgExtendedError")
+		errCode, _, _ := procCommDlgExtendedError.Call()
+		if errCode != 0 {
+			c.JSON(200, gin.H{"status": "error", "message": fmt.Sprintf("dialog failed (CommDlg error %d)", errCode)})
+			return
+		}
 		c.JSON(200, gin.H{"status": "ok", "path": ""})
 		return
 	}

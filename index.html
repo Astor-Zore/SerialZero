@@ -7,7 +7,7 @@
     <!-- Inline dark background BEFORE the external stylesheet loads:
          WebView2 paints the first frame with the document background, so
          without this the window flashes white until style.css arrives. -->
-    <style>html, body { background-color: #1e1e1e; }</style>
+    <style>html, body { background-color: #141418; }</style>
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/lib/xterm.css">
 </head>
@@ -21,28 +21,25 @@
     <div class="resize-handle resize-sw"></div>
     <div class="resize-handle resize-se"></div>
     <div class="titlebar">
+        <button id="toggle-sidebar-btn" class="icon-btn titlebar-tbtn" title="Toggle sidebar">☰</button>
         <span class="titlebar-title" id="titlebar-title">SerialZero</span>
-        <div class="titlebar-controls">
-            <button class="titlebar-btn" id="btn-minimize" title="Minimize">─</button>
-            <button class="titlebar-btn" id="btn-maximize" title="Maximize">□</button>
-            <button class="titlebar-btn titlebar-btn-close" id="btn-close" title="Close">✕</button>
-        </div>
-    </div>
-    <div class="toolbar">
-        <button id="toggle-sidebar-btn" class="icon-btn">☰</button>
-        <div class="title">SerialZero</div>
         <div class="status-bar">
             <span id="connection-status">Disconnected</span>
             <span id="port-info">COM1 | 9600</span>
         </div>
         <div class="actions">
-            <button id="connect-btn" class="action-btn">Connect</button>
-            <button id="scan-btn" class="tool-btn">Scan</button>
-            <button id="clear-btn" class="tool-btn">Clear</button>
-            <button id="export-btn" class="tool-btn">Export</button>
+            <button id="connect-btn" class="action-btn tb-connect">Connect</button>
+            <button id="scan-btn" class="tool-btn tbtn">Scan</button>
+            <button id="clear-btn" class="tool-btn tbtn">Clear</button>
+            <button id="export-btn" class="tool-btn tbtn">Export</button>
             <input type="file" id="import-log-input" accept=".txt,.log" style="display: none;">
-            <button id="import-log-btn" class="tool-btn">Import Log</button>
-            <button id="toggle-script-btn" class="icon-btn">Scripts</button>
+            <button id="import-log-btn" class="tool-btn tbtn">Import</button>
+            <button id="toggle-script-btn" class="tool-btn tbtn" title="Automation scripts">Scripts</button>
+        </div>
+        <div class="titlebar-controls">
+            <button class="titlebar-btn" id="btn-minimize" title="Minimize">─</button>
+            <button class="titlebar-btn" id="btn-maximize" title="Maximize">□</button>
+            <button class="titlebar-btn titlebar-btn-close" id="btn-close" title="Close">✕</button>
         </div>
     </div>
 
@@ -54,7 +51,7 @@
     <div class="main-container">
         <div id="sidebar" class="sidebar">
             <div class="config-section">
-                <h3>Serial Port</h3>
+                <h3 class="sec-toggle">▾ Serial Port</h3>
                 <label>Port: <input type="text" id="port-input" value="COM1"></label>
                 <label>Baudrate: <input type="number" id="baud-input" value="9600"></label>
                 <label>Data Bits: <select id="databits-select"><option value="8" selected>8</option><option value="7">7</option><option value="6">6</option><option value="5">5</option></select></label>
@@ -63,8 +60,9 @@
             </div>
 
             <div class="config-section">
-                <h3>Display</h3>
-                <label>Font: <input type="text" id="font-input" value="Cascadia Code"></label>
+                <h3 class="sec-toggle">▾ Display</h3>
+                <label>Font: <input type="text" id="font-input" list="font-list" value="Cascadia Code"></label>
+                <datalist id="font-list"></datalist>
                 <label>Font Size: <input type="number" id="fontsize-input" value="14"></label>
                 <label>Scrollback: <input type="number" id="scrollback-input" value="100000"></label>
                 <div class="toggle-group">Mode: <input type="radio" id="ascii-mode" name="mode" value="ascii" checked> ASCII <input type="radio" id="hex-mode" name="mode" value="hex"> HEX</div>
@@ -73,7 +71,7 @@
             </div>
 
             <div class="config-section">
-                <h3>Theme</h3>
+                <h3 class="sec-toggle">▾ Theme</h3>
                 <label>Preset: <select id="theme-preset-select"><option value="Default" selected>Default</option><option value="Dracula">Dracula</option><option value="Monokai">Monokai</option><option value="Solarized">Solarized Dark</option><option value="Gruvbox">Gruvbox</option><option value="Nord">Nord</option><option value="Custom">Custom</option></select></label>
                 <div id="custom-theme-area" style="display: none; flex-direction: column; gap: 8px;">
                     <label>Background: <input type="color" id="theme-bg" value="#1e1e1e"></label>
@@ -84,7 +82,7 @@
             <button id="save-config-btn" class="action-btn" style="width: 100%; padding: 8px;">Save Config</button>
             
             <div class="config-section highlight-section">
-                <h3>Highlight (regex:color)</h3>
+                <h3 class="sec-toggle">▾ Highlight (regex:color)</h3>
                 <div class="highlight-tool-row">
                     <input type="color" id="color-picker" value="#ff0000" title="Pick color to copy hex code">
                     <span id="color-picker-hint" style="font-size: 10px; color: var(--text-secondary);">Click to copy HEX</span>
@@ -165,6 +163,15 @@ ok:#00ff00</textarea>
         </div>
     </div>
 
+    <!-- Status bar: persistent state (mode, connection, counters, keymap hints) -->
+    <div id="statusbar" class="statusbar">
+        <span id="sb-mode" class="sb-mode-badge" title="Click to change send mode">SHELL</span>
+        <span class="statusbar-item"><span id="sb-dot" class="sb-dot"></span><span id="sb-conn">Disconnected</span></span>
+        <span class="statusbar-item" id="sb-port"></span>
+        <span class="statusbar-item" id="sb-counters"></span>
+        <span class="statusbar-hint">Ctrl+K commands · F2 connect · Ctrl+1..9 quick</span>
+    </div>
+
     <div id="modal" class="modal">
         <div id="modal-content" class="modal-content">
             <span class="close">&times;</span>
@@ -172,6 +179,7 @@ ok:#00ff00</textarea>
         </div>
     </div>
 
+    <div id="toast-container"></div>
     <script src="/static/lib/xterm.js"></script>
     <script src="/static/lib/xterm-addon-fit.js"></script>
     <script src="/static/app.js"></script>
